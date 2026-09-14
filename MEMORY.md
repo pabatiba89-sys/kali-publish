@@ -21,3 +21,4 @@
 - Release `v1.0.0` targets Apple Silicon with `macos-15` and Windows x64 with `windows-2025`; both archives are unsigned and include a SHA-256 checksum.
 - The local Apple Silicon package was verified as an arm64 executable: its packaged Playwright driver launched system Chrome and its `/health` endpoint responded successfully.
 - GitHub Actions run `34804380222` passed both platform builds and published the verified public release at `https://github.com/pabatiba89-sys/kali-publish/releases/tag/v1.0.0`.
+- Public-facing project copy should focus only on supported publishing capabilities and how to use them; omit extraction history and unrelated excluded-business descriptions.
