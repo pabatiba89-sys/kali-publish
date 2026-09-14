@@ -27,6 +27,12 @@ chmod +x install.sh start.sh
 
 服务默认只监听 `127.0.0.1:5409`。如需指定本机 Chrome，复制 `.env.example` 中的变量到自己的运行环境；项目不会自动读取或提交 `.env`。
 
+## 下载可执行版
+
+GitHub Releases 同时提供 Apple Silicon（macOS arm64）和 Windows x64 压缩包。可执行版不需要安装 Python，但必须先安装 Google Chrome。下载后请先使用同名 `.sha256` 文件校验完整性，具体启动方式见压缩包中的 `README.md`。
+
+发布包由 GitHub Actions 在对应系统上分别构建，并在两个平台的测试和浏览器冒烟检查全部通过后发布。当前版本未进行 Apple Developer 或 Windows 商业代码签名，首次运行可能出现系统安全提示。
+
 ## 主要 API
 
 - `GET /health`：健康检查

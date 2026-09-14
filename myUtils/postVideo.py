@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 from datetime import datetime
-from conf import BASE_DIR
+from conf import COOKIES_FOLDER, VIDEO_FOLDER
 from uploader.douyin_uploader.main import DouYinVideo
 from uploader.ks_uploader.main import KSVideo
 from uploader.tencent_uploader.main import TencentVideo
@@ -13,8 +13,8 @@ from uploader.youtube_uploader.main import YouTubeVideo
 
 def post_video_tencent(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime=''):
     # 生成文件的完整路径
-    account_file = [Path(BASE_DIR / "cookiesFile" / file) for file in account_file]
-    files = [Path(BASE_DIR / "videoFile" / file) for file in files]
+    account_file = [Path(COOKIES_FOLDER / file) for file in account_file]
+    files = [Path(VIDEO_FOLDER / file) for file in files]
     if enableTimer:
         endpublishTime = parse_publish_date(endpublishTime)
 
@@ -32,8 +32,8 @@ def post_video_tencent(title,files,tags,account_file,category=TencentZoneTypes.L
 def post_video_DouYin(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,
                       productLink = '', productTitle = '',endpublishTime=''):
     # 生成文件的完整路径
-    account_file = [Path(BASE_DIR / "cookiesFile" / file) for file in account_file]
-    files = [Path(BASE_DIR / "videoFile" / file) for file in files]
+    account_file = [Path(COOKIES_FOLDER / file) for file in account_file]
+    files = [Path(VIDEO_FOLDER / file) for file in files]
     publish_datetimes = None
     if enableTimer:
         publish_datetimes = parse_publish_date(endpublishTime)
@@ -51,8 +51,8 @@ def post_video_DouYin(title,files,tags,account_file,category=TencentZoneTypes.LI
 
 def post_video_ks(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime=''):
     # 生成文件的完整路径
-    account_file = [Path(BASE_DIR / "cookiesFile" / file) for file in account_file]
-    files = [Path(BASE_DIR / "videoFile" / file) for file in files]
+    account_file = [Path(COOKIES_FOLDER / file) for file in account_file]
+    files = [Path(VIDEO_FOLDER / file) for file in files]
     publish_datetimes = None
     if enableTimer:
         publish_datetimes = parse_publish_date(endpublishTime)
@@ -69,8 +69,8 @@ def post_video_ks(title,files,tags,account_file,category=TencentZoneTypes.LIFEST
 
 def post_video_xhs(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime=''):
     # 生成文件的完整路径
-    account_file = [Path(BASE_DIR / "cookiesFile" / file) for file in account_file]
-    files = [Path(BASE_DIR / "videoFile" / file) for file in files]
+    account_file = [Path(COOKIES_FOLDER / file) for file in account_file]
+    files = [Path(VIDEO_FOLDER / file) for file in files]
     file_num = len(files)
     publish_datetimes = None
     if enableTimer:
@@ -88,8 +88,8 @@ def post_video_xhs(title,files,tags,account_file,category=TencentZoneTypes.LIFES
 
 def post_video_tk(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime=''):
     # 生成文件的完整路径
-    account_file = [Path(BASE_DIR / "cookiesFile" / file) for file in account_file]
-    files = [Path(BASE_DIR / "videoFile" / file) for file in files]
+    account_file = [Path(COOKIES_FOLDER / file) for file in account_file]
+    files = [Path(VIDEO_FOLDER / file) for file in files]
     file_num = len(files)
     publish_datetimes = None
     if enableTimer:
@@ -106,8 +106,8 @@ def post_video_tk(title,files,tags,account_file,category=TencentZoneTypes.LIFEST
             asyncio.run(app.main(), debug=False)
 def post_video_youtube(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime=''):
     # 生成文件的完整路径
-    account_file = [Path(BASE_DIR / "cookiesFile" / file) for file in account_file]
-    files = [Path(BASE_DIR / "videoFile" / file) for file in files]
+    account_file = [Path(COOKIES_FOLDER / file) for file in account_file]
+    files = [Path(VIDEO_FOLDER / file) for file in files]
     publish_datetimes = None
     if enableTimer:
         publish_datetimes = parse_publish_date(endpublishTime)

@@ -19,6 +19,7 @@ from patchright.async_api import Page, Playwright, async_playwright
 from conf import DEBUG_MODE
 from uploader.base_video import BaseVideoUploader
 from utils.base_social_media import set_init_script
+from utils.browser_runtime import chromium_launch_options
 from utils.log import youtube_logger
 
 try:
@@ -50,7 +51,7 @@ def _build_login_result(success, status, message, account_file, current_url=""):
 async def cookie_auth(account_file) -> bool:
     """登录态是否仍有效：带 cookie 打开 Studio，没被踢到 Google 登录页且进入了频道页即有效。"""
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True, channel="chrome")
+        browser = await playwright.chromium.launch(**chromium_launch_options(headless=True))
         try:
             context = await browser.new_context(storage_state=account_file)
             context = await set_init_script(context)
@@ -71,7 +72,7 @@ async def youtube_cookie_gen(account_file, headless: bool = False):
     """交互式登录：开浏览器让用户登录 Google/YouTube，进入频道页后保存 storage_state。"""
     async with async_playwright() as playwright:
         # 登录必须显形，让用户输账号密码/二步验证
-        browser = await playwright.chromium.launch(headless=False, channel="chrome")
+        browser = await playwright.chromium.launch(**chromium_launch_options(headless=False))
         context = await browser.new_context()
         context = await set_init_script(context)
         page = await context.new_page()
@@ -198,10 +199,10 @@ class YouTubeVideo(BaseVideoUploader):
         self.headless = headless
 
     async def upload(self, playwright: Playwright) -> None:
-        browser = await playwright.chromium.launch(
-            headless=self.headless, channel="chrome",
-            proxy={"server": YT_PROXY} if YT_PROXY else None,
-        )
+        launch_options = chromium_launch_options(headless=self.headless)
+        if YT_PROXY:
+            launch_options["proxy"] = {"server": YT_PROXY}
+        browser = await playwright.chromium.launch(**launch_options)
         context = await browser.new_context(storage_state=self.account_file)
         context = await set_init_script(context)
         page = await context.new_page()

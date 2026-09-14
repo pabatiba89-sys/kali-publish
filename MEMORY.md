@@ -17,3 +17,6 @@
 - Fresh-environment verification on Python 3.14 passed all six API and dispatch tests without invoking a real browser login or publish action.
 - Canonical GitHub repository: `https://github.com/pabatiba89-sys/kali-publish`; visibility is public.
 - The copied automation adapters derive from `dreammis/social-auto-upload`, whose MIT notice must remain in `LICENSE`; project-specific extraction and API code is released under the same license.
+- Executable releases use a PyInstaller one-directory bundle and call the user's installed Google Chrome instead of redistributing a Playwright browser. `LOCAL_CHROME_PATH` remains the explicit override.
+- Release `v1.0.0` targets Apple Silicon with `macos-15` and Windows x64 with `windows-2025`; both archives are unsigned and include a SHA-256 checksum.
+- The local Apple Silicon package was verified as an arm64 executable: its packaged Playwright driver launched system Chrome and its `/health` endpoint responded successfully.

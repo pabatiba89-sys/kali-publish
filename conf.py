@@ -1,4 +1,6 @@
 import os
+import platform
+import sys
 from pathlib import Path
 
 
@@ -9,7 +11,24 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-BASE_DIR = Path(__file__).parent.resolve()
+def _resource_dir() -> Path:
+    bundled = getattr(sys, "_MEIPASS", None)
+    return Path(bundled).resolve() if bundled else Path(__file__).parent.resolve()
+
+
+def _default_data_dir() -> Path:
+    if not getattr(sys, "frozen", False):
+        return RESOURCE_DIR
+    system = platform.system()
+    if system == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "Kali Publish"
+    if system == "Windows":
+        return Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "Kali Publish"
+    return Path.home() / ".local" / "share" / "kali-publish"
+
+
+RESOURCE_DIR = _resource_dir()
+BASE_DIR = Path(os.getenv("KALI_PUBLISH_DATA_DIR", str(_default_data_dir()))).expanduser().resolve()
 XHS_SERVER = os.getenv("XHS_SERVER", "http://127.0.0.1:11901")
 LOCAL_CHROME_PATH = os.getenv("LOCAL_CHROME_PATH", "")
 LOCAL_CHROME_HEADLESS = _env_bool("LOCAL_CHROME_HEADLESS", False)

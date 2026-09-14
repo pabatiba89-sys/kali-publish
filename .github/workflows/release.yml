@@ -1,0 +1,95 @@
+name: Build and release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version
+        required: true
+        default: v1.0.0
+      publish:
+        description: Publish a GitHub Release after both builds pass
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos-arm64
+            binary: dist/kali-publish/kali-publish
+          - runner: windows-2025
+            platform: windows-x64
+            binary: dist/kali-publish/kali-publish.exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+      - name: Build executable bundle
+        run: python -m PyInstaller --noconfirm --clean kali-publish.spec
+      - name: Smoke-test packaged backend
+        run: python scripts/smoke_test_binary.py "${{ matrix.binary }}"
+      - name: Create release archive and checksum
+        run: >-
+          python scripts/package_release.py
+          --bundle dist/kali-publish
+          --platform "${{ matrix.platform }}"
+          --version "${{ env.RELEASE_VERSION }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kali-publish-${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_VERSION" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_VERSION" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "Kali Publish $RELEASE_VERSION" \
+              --notes-file RELEASE_NOTES.md
+          fi

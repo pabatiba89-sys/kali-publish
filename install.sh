@@ -5,6 +5,5 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m playwright install chromium
 
-echo "Installed. Run ./start.sh to start the backend."
+echo "Installed. Make sure Google Chrome is available, then run ./start.sh."

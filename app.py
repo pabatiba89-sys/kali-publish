@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -20,6 +21,7 @@ from myUtils.login import (
     xiaohongshu_cookie_gen,
 )
 from publishing import PLATFORMS, publish_videos
+from utils.browser_runtime import chromium_launch_options
 
 
 LOGIN_HANDLERS = {
@@ -272,5 +274,27 @@ def create_app(test_config=None):
 app = create_app()
 
 
-if __name__ == "__main__":
+async def browser_self_test():
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(**chromium_launch_options(headless=True))
+        try:
+            page = await browser.new_page()
+            await page.set_content("<title>kali-publish-ok</title>")
+            if await page.title() != "kali-publish-ok":
+                raise RuntimeError("Chrome page test failed")
+        finally:
+            await browser.close()
+    print("browser-self-test-ok")
+
+
+def main():
+    if "--self-test-browser" in sys.argv:
+        asyncio.run(browser_self_test())
+        return
     app.run(host=conf.HOST, port=conf.PORT, debug=conf.DEBUG_MODE)
+
+
+if __name__ == "__main__":
+    main()
