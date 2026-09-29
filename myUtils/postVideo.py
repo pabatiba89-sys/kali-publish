@@ -9,6 +9,13 @@ from uploader.xiaohongshu_uploader.main import XiaoHongShuVideo
 from utils.constant import TencentZoneTypes
 from uploader.tk_uploader.main import TiktokVideo
 from uploader.youtube_uploader.main import YouTubeVideo
+from uploader.official_api import (
+    FacebookReelPublisher,
+    InstagramReelPublisher,
+    XVideoPublisher,
+    build_caption,
+    load_credentials,
+)
 
 
 def post_video_tencent(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime=''):
@@ -102,7 +109,7 @@ def post_video_tk(title,files,tags,account_file,category=TencentZoneTypes.LIFEST
             print(f"视频文件名：{file}")
             print(f"标题：{title}")
             print(f"Hashtag：{tags}")
-            app = TiktokVideo(title, str(file), tags, publish_datetimes, cookie,enableTimer)
+            app = TiktokVideo(title, str(file), tags, publish_datetimes or 0, cookie)
             asyncio.run(app.main(), debug=False)
 def post_video_youtube(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime=''):
     # 生成文件的完整路径
@@ -119,16 +126,63 @@ def post_video_youtube(title,files,tags,account_file,category=TencentZoneTypes.L
             print(f"视频文件名：{file}")
             print(f"标题：{title}")
             print(f"Hashtag：{tags}")
-            app = YouTubeVideo(title, str(file), tags, publish_datetimes, cookie,enableTimer)
+            app = YouTubeVideo(title, str(file), tags, cookie)
             asyncio.run(app.main(), debug=False)
 
 
+def _post_with_official_api(
+    platform_type,
+    publisher_class,
+    title,
+    files,
+    tags,
+    account_file,
+    publish_date=None,
+):
+    account_paths = [Path(COOKIES_FOLDER / file) for file in account_file]
+    video_paths = [Path(VIDEO_FOLDER / file) for file in files]
+    caption = build_caption(title, tags)
+    for video_path in video_paths:
+        for account_path in account_paths:
+            credentials = load_credentials(account_path, platform_type)
+            publisher = publisher_class(credentials)
+            if platform_type == 9:
+                publisher.publish(video_path, caption, publish_date=publish_date)
+            else:
+                publisher.publish(video_path, caption)
+
+
+def post_video_x(title, files, tags, account_file, category=None, enableTimer=False,
+                 videos_per_day=1, daily_times=None, start_days=0, endpublishTime=''):
+    _post_with_official_api(7, XVideoPublisher, title, files, tags, account_file)
+
+
+def post_video_instagram(title, files, tags, account_file, category=None, enableTimer=False,
+                         videos_per_day=1, daily_times=None, start_days=0, endpublishTime=''):
+    _post_with_official_api(8, InstagramReelPublisher, title, files, tags, account_file)
+
+
+def post_video_facebook(title, files, tags, account_file, category=None, enableTimer=False,
+                        videos_per_day=1, daily_times=None, start_days=0, endpublishTime=''):
+    publish_date = parse_publish_date(endpublishTime) if enableTimer else None
+    _post_with_official_api(
+        9,
+        FacebookReelPublisher,
+        title,
+        files,
+        tags,
+        account_file,
+        publish_date=publish_date,
+    )
+
+
 def parse_publish_date(publish_date_str: str) -> datetime:
-    """解析 'YYYY年M月D日 HH:MM:SS' 返回 datetime 对象"""
-    #publish_date_str='2025-11-26 12:00:00'
-    publish_date_str = f'{publish_date_str}'.replace('T', ' ').replace('.000+00:00', '').strip()
-    print(publish_date_str)
-    return datetime.strptime(publish_date_str, '%Y-%m-%d %H:%M:%S')
+    """Parse an ISO-style timestamp and normalize aware values to local wall time."""
+    value = str(publish_date_str).strip().replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
 
 def format_publish_date_str(publish_date_str: str) -> str:
     """将 'YYYY年M月D日 HH:MM' 转为 'YYYY-MM-DD HH:MM:SS' 字符串"""

@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from conf import COOKIES_FOLDER, DATABASE_PATH, LOCAL_CHROME_HEADLESS
 from utils.browser_runtime import chromium_launch_options
+from uploader.youtube_uploader.main import youtube_cookie_gen as youtube_browser_cookie_gen
 
 # 统一获取浏览器启动配置（防风控+引入本地浏览器）
 def get_browser_options():
@@ -287,6 +288,70 @@ async def xiaohongshu_cookie_gen(id,status_queue):
             conn.commit()
             print("✅ 用户状态已记录")
         status_queue.put("200")
+
+
+def _record_account(platform_type, filename, account_name):
+    with sqlite3.connect(DATABASE_PATH) as conn:
+        conn.execute(
+            "INSERT INTO user_info (type, filePath, userName, status) VALUES (?, ?, ?, ?)",
+            (platform_type, filename, account_name, 1),
+        )
+        conn.commit()
+
+
+async def tiktok_cookie_gen(id, status_queue):
+    """Open a visible TikTok login window and persist the resulting browser state."""
+    filename = f"{uuid.uuid4()}.json"
+    account_path = Path(COOKIES_FOLDER) / filename
+    account_path.parent.mkdir(parents=True, exist_ok=True)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(
+            **chromium_launch_options(headless=False, args=["--lang=en-GB"])
+        )
+        context = await browser.new_context()
+        context = await set_init_script(context)
+        page = await context.new_page()
+        await page.goto("https://www.tiktok.com/login?lang=en", wait_until="domcontentloaded")
+        status_queue.put("browser_opened")
+        logged_in = False
+        for _ in range(600):
+            if "/login" not in page.url.lower():
+                try:
+                    await page.goto(
+                        "https://www.tiktok.com/tiktokstudio/upload",
+                        wait_until="domcontentloaded",
+                    )
+                    await page.wait_for_timeout(2000)
+                    logged_in = "/login" not in page.url.lower()
+                except Exception:
+                    logged_in = False
+                if logged_in:
+                    break
+            await asyncio.sleep(1)
+        if logged_in:
+            await context.storage_state(path=account_path)
+        await context.close()
+        await browser.close()
+
+    if not logged_in:
+        status_queue.put("500")
+        return
+    _record_account(5, filename, id)
+    status_queue.put("200")
+
+
+async def youtube_cookie_gen(id, status_queue):
+    """Use the existing YouTube Studio login flow and register the saved state."""
+    filename = f"{uuid.uuid4()}.json"
+    account_path = Path(COOKIES_FOLDER) / filename
+    account_path.parent.mkdir(parents=True, exist_ok=True)
+    status_queue.put("browser_opened")
+    result = await youtube_browser_cookie_gen(account_path)
+    if not result["success"]:
+        status_queue.put("500")
+        return
+    _record_account(6, filename, id)
+    status_queue.put("200")
 
 # a = asyncio.run(xiaohongshu_cookie_gen(4,None))
 # print(a)

@@ -1,3 +1,10 @@
+# Unreleased
+
+- 新增 X、Instagram 和 Facebook 视频自动发布。
+- X 使用官方 v2 分片上传与发布接口。
+- Instagram 使用 Meta 官方 Reels 可恢复上传；Facebook 使用主页 Reels 发布接口。
+- TikTok 和 YouTube 新增本机浏览器登录入口，并修复真实发布时的参数错误。
+
 # Kali Publish v1.0.0
 
 首个公开发行版，用于在本机统一发布多平台视频。

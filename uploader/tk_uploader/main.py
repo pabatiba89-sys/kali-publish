@@ -116,7 +116,7 @@ class TiktokVideo(object):
         await scheduled_picker.locator('div.TUXInputBox').nth(0).click()
 
         hour_str = publish_date.strftime("%H")
-        correct_minute = int(publish_date.minute / 5)
+        correct_minute = int(publish_date.minute / 5) * 5
         minute_str = f"{correct_minute:02d}"
 
         hour_selector = f"span.tiktok-timepicker-left:has-text('{hour_str}')"
@@ -258,9 +258,8 @@ class TiktokVideo(object):
                 await asyncio.sleep(2)
 
     async def choose_base_locator(self, page):
-        # await page.wait_for_selector('div.upload-container')
         if await page.locator('iframe[data-tt="Upload_index_iframe"]').count():
-            self.locator_base = self.locator_base
+            self.locator_base = page.frame_locator('iframe[data-tt="Upload_index_iframe"]')
         else:
             self.locator_base = page.locator(Tk_Locator.default)
 

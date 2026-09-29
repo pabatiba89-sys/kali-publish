@@ -108,6 +108,12 @@ async def check_cookie(type,file_path):
         # 快手
         case 4:
             return await cookie_auth_ks(Path(COOKIES_FOLDER / file_path))
+        case 5:
+            from uploader.tk_uploader.main import cookie_auth
+            return await cookie_auth(Path(COOKIES_FOLDER / file_path))
+        case 6:
+            from uploader.youtube_uploader.main import cookie_auth
+            return await cookie_auth(Path(COOKIES_FOLDER / file_path))
         case _:
             return False
 

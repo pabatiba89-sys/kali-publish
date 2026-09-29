@@ -22,6 +22,19 @@ class PublishingDispatchTests(unittest.TestCase):
             "title", ["video.mp4"], ["tag"], ["account.json"], None, False, 1, None, 0, ""
         )
 
+    def test_publish_defaults_to_immediate(self):
+        publisher = Mock()
+        platform = {
+            "name": "X",
+            "publisher": publisher,
+            "login": False,
+            "supportsSchedule": False,
+        }
+        payload = {"type": 7, "fileList": ["video.mp4"], "accountList": ["account.json"]}
+        with patch.dict(publishing.PLATFORMS, {7: platform}):
+            publishing.publish_videos(payload)
+        self.assertFalse(publisher.call_args.args[5])
+
     def test_douyin_product_fields_are_preserved(self):
         publisher = Mock()
         platform = {"name": "抖音", "publisher": publisher, "login": True}
@@ -37,6 +50,17 @@ class PublishingDispatchTests(unittest.TestCase):
             publishing.publish_videos(payload)
         arguments = publisher.call_args.args
         self.assertEqual(arguments[-3:], ("https://example.com/product", "product", "2026-09-15 10:00:00"))
+
+    def test_platform_without_native_schedule_is_rejected(self):
+        payload = {
+            "type": 7,
+            "fileList": ["video.mp4"],
+            "accountList": ["account.json"],
+            "sendnow": "schedule",
+            "endpublishTime": "2026-10-01 10:00:00",
+        }
+        with self.assertRaisesRegex(ValueError, "does not support scheduled publishing"):
+            publishing.publish_videos(payload)
 
 
 if __name__ == "__main__":

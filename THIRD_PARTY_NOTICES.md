@@ -7,5 +7,6 @@ This project depends on the following runtime packages:
 - Loguru — MIT
 - Playwright for Python — Apache-2.0
 - Patchright for Python — Apache-2.0
+- Requests — Apache-2.0
 
 See each installed package and its upstream repository for the complete license text and transitive dependency notices.

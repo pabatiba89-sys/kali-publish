@@ -1,20 +1,53 @@
 from myUtils.postVideo import (
+    post_video_facebook,
+    post_video_instagram,
     post_video_DouYin,
     post_video_ks,
     post_video_tencent,
     post_video_tk,
+    post_video_x,
     post_video_xhs,
     post_video_youtube,
 )
 
 
 PLATFORMS = {
-    1: {"name": "小红书", "publisher": post_video_xhs, "login": True},
-    2: {"name": "视频号", "publisher": post_video_tencent, "login": True},
-    3: {"name": "抖音", "publisher": post_video_DouYin, "login": True},
-    4: {"name": "快手", "publisher": post_video_ks, "login": True},
-    5: {"name": "TikTok", "publisher": post_video_tk, "login": False},
-    6: {"name": "YouTube", "publisher": post_video_youtube, "login": False},
+    1: {
+        "name": "小红书", "publisher": post_video_xhs, "login": True,
+        "accountMode": "browser", "supportsSchedule": True,
+    },
+    2: {
+        "name": "视频号", "publisher": post_video_tencent, "login": True,
+        "accountMode": "browser", "supportsSchedule": True,
+    },
+    3: {
+        "name": "抖音", "publisher": post_video_DouYin, "login": True,
+        "accountMode": "browser", "supportsSchedule": True,
+    },
+    4: {
+        "name": "快手", "publisher": post_video_ks, "login": True,
+        "accountMode": "browser", "supportsSchedule": True,
+    },
+    5: {
+        "name": "TikTok", "publisher": post_video_tk, "login": True,
+        "accountMode": "browser", "supportsSchedule": True,
+    },
+    6: {
+        "name": "YouTube", "publisher": post_video_youtube, "login": True,
+        "accountMode": "browser", "supportsSchedule": False,
+    },
+    7: {
+        "name": "X", "publisher": post_video_x, "login": False,
+        "accountMode": "api", "supportsSchedule": False,
+    },
+    8: {
+        "name": "Instagram", "publisher": post_video_instagram, "login": False,
+        "accountMode": "api", "supportsSchedule": False,
+    },
+    9: {
+        "name": "Facebook", "publisher": post_video_facebook, "login": False,
+        "accountMode": "api", "supportsSchedule": True,
+    },
 }
 
 
@@ -34,7 +67,9 @@ def publish_videos(payload: dict) -> None:
     category = payload.get("category")
     if category == 0:
         category = None
-    enable_timer = payload.get("sendnow", "schedule") == "schedule"
+    enable_timer = payload.get("sendnow", "now") == "schedule"
+    if enable_timer and not platform.get("supportsSchedule", True):
+        raise ValueError(f"{platform['name']} does not support scheduled publishing")
     arguments = [
         payload.get("title") or "",
         file_list,
