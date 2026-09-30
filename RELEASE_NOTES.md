@@ -1,6 +1,7 @@
 # Unreleased
 
 - 补齐 `POST /uploadFromUrl` 本机视频下载接口与 CORS 预检，修复网页发布时显示的跨域错误。
+- 按本机发布工作流的兼容要求，`/uploadFromUrl` 下载 HTTPS 视频时忽略证书校验错误，但仍阻止私网地址并限制文件大小。
 - 账号列表的 Cookie 实时验证仅保留视频号，其他平台不再因列表刷新启动浏览器检查。
 - X、Instagram 和 Facebook 改为本机 Chrome 登录与网页发布，移除官方 API 凭据导入。
 - X、Instagram 和 Facebook 的首次登录改用普通 Chrome 独立资料目录，修复使用 Google 账号登录时反复进入“重试”页。

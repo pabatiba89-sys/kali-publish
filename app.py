@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import shutil
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -10,7 +11,7 @@ from pathlib import Path
 from queue import Queue
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -80,7 +81,10 @@ class _SafeRedirectHandler(HTTPRedirectHandler):
 def _download_remote_file(video_url: str, destination: Path, max_bytes: int) -> None:
     _validate_remote_url(video_url)
     request_object = Request(video_url, headers={"User-Agent": "KaliPublish/1.0"})
-    opener = build_opener(_SafeRedirectHandler())
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    opener = build_opener(_SafeRedirectHandler(), HTTPSHandler(context=ssl_context))
     with opener.open(request_object, timeout=120) as response, destination.open("wb") as output:
         content_length = response.headers.get("Content-Length")
         if content_length and int(content_length) > max_bytes:

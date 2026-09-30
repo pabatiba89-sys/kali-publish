@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import app as app_module
 
@@ -98,6 +98,34 @@ class BackendApiTests(unittest.TestCase):
         self.assertTrue((Path(self.application.config["VIDEO_FOLDER"]) / record["filepath"]).is_file())
         files = self.client.get("/getFiles").get_json()["data"]
         self.assertEqual(files[0]["file_path"], record["filepath"])
+
+    def test_remote_download_ignores_https_certificate_errors(self):
+        response = MagicMock()
+        response.headers = {}
+        response.read.return_value = b""
+        response.__enter__.return_value = response
+        opener = MagicMock()
+        opener.open.return_value = response
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(app_module, "_validate_remote_url"),
+            patch.object(app_module, "build_opener", return_value=opener) as builder,
+        ):
+            app_module._download_remote_file(
+                "https://cdn.example.com/video.mp4",
+                Path(directory) / "video.mp4",
+                1024,
+            )
+
+        https_handlers = [
+            handler
+            for handler in builder.call_args.args
+            if type(handler).__name__ == "HTTPSHandler"
+        ]
+        self.assertEqual(len(https_handlers), 1)
+        self.assertFalse(https_handlers[0]._context.check_hostname)
+        self.assertEqual(https_handlers[0]._context.verify_mode, app_module.ssl.CERT_NONE)
 
     def test_account_filter_is_parameterized(self):
         with closing(sqlite3.connect(self.application.config["DATABASE_PATH"])) as connection:
