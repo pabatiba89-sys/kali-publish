@@ -88,6 +88,23 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(profile_path.exists())
 
+    def test_delete_web_account_removes_dedicated_profile(self):
+        profile_name = "web-7-test-profile"
+        profile_path = Path(self.application.config["COOKIES_FOLDER"]) / profile_name
+        profile_path.mkdir()
+        (profile_path / "Local State").write_text("{}", encoding="utf-8")
+        with closing(sqlite3.connect(self.application.config["DATABASE_PATH"])) as connection:
+            cursor = connection.execute(
+                "INSERT INTO user_info (type, filePath, userName, status) VALUES (?, ?, ?, ?)",
+                (7, profile_name, "x-test", 1),
+            )
+            account_id = cursor.lastrowid
+            connection.commit()
+
+        response = self.client.delete(f"/deleteAccount?id={account_id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(profile_path.exists())
+
     def test_publish_validation_and_dispatch(self):
         self.assertEqual(self.client.post("/api/publish", json={}).status_code, 400)
         payload = {"type": 1, "fileList": ["a.mp4"], "accountList": ["a.json"]}

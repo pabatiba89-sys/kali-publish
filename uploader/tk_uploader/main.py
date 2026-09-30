@@ -71,15 +71,22 @@ async def get_tiktok_cookie(account_file):
 
 
 class TiktokVideo(object):
-    def __init__(self, title, file_path, tags, publish_date, account_file, thumbnail_path=None):
+    def __init__(self, title, file_path, tags, publish_date, account_file, description="", thumbnail_path=None):
         self.title = title
         self.file_path = file_path
         self.tags = tags
         self.publish_date = publish_date
         self.account_file = account_file
+        self.description = str(description or "")
         self.thumbnail_path = str(thumbnail_path) if thumbnail_path else None
         self.headless = LOCAL_CHROME_HEADLESS
         self.locator_base = None
+
+    @property
+    def caption(self):
+        return "\n".join(
+            part for part in (str(self.title or "").strip(), self.description.strip()) if part
+        )
 
 
     async def set_schedule_time(self, page, publish_date):
@@ -206,7 +213,7 @@ class TiktokVideo(object):
 
         await page.wait_for_timeout(1000)  # 等待1秒
 
-        await page.keyboard.insert_text(self.title)
+        await page.keyboard.insert_text(self.caption)
         await page.wait_for_timeout(1000)  # 等待1秒
         await page.keyboard.press("End")
 

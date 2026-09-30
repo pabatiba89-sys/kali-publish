@@ -109,6 +109,46 @@ class PublishingDispatchTests(unittest.TestCase):
             ("", "description", "cover.png", "series"),
         )
 
+    def test_tiktok_description_and_thumbnail_are_forwarded(self):
+        publisher = Mock()
+        platform = {
+            "name": "TikTok",
+            "publisher": publisher,
+            "login": True,
+            "supportsSchedule": True,
+        }
+        payload = {
+            "type": 5,
+            "fileList": ["video.mp4"],
+            "accountList": ["account.json"],
+            "description": "description",
+            "thumbnailPath": "cover.png",
+        }
+        with patch.dict(publishing.PLATFORMS, {5: platform}):
+            publishing.publish_videos(payload)
+        self.assertEqual(
+            publisher.call_args.args[-3:],
+            ("", "description", "cover.png"),
+        )
+
+    def test_web_description_is_forwarded(self):
+        publisher = Mock()
+        platform = {
+            "name": "X",
+            "publisher": publisher,
+            "login": True,
+            "supportsSchedule": False,
+        }
+        payload = {
+            "type": 7,
+            "fileList": ["video.mp4"],
+            "accountList": ["account.json"],
+            "content": "body",
+        }
+        with patch.dict(publishing.PLATFORMS, {7: platform}):
+            publishing.publish_videos(payload)
+        self.assertEqual(publisher.call_args.args[-2:], ("", "body"))
+
 
 if __name__ == "__main__":
     unittest.main()

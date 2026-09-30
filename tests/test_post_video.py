@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from myUtils import postVideo
+from uploader.tk_uploader.main import TiktokVideo
 
 
 class BrowserPublisherWiringTests(unittest.TestCase):
@@ -21,8 +22,20 @@ class BrowserPublisherWiringTests(unittest.TestCase):
         )
         self.assertEqual(len(video_class.call_args.args), 5)
         self.assertEqual(video_class.call_args.args[3], 0)
+        self.assertEqual(video_class.call_args.kwargs["description"], "")
         self.assertIsNone(video_class.call_args.kwargs["thumbnail_path"])
         run.assert_called_once()
+
+    def test_tiktok_caption_includes_description(self):
+        video = TiktokVideo(
+            "Title",
+            "video.mp4",
+            ["tag"],
+            0,
+            "account.json",
+            description="Description",
+        )
+        self.assertEqual(getattr(video, "caption", None), "Title\nDescription")
 
     @patch.object(postVideo.asyncio, "run")
     @patch.object(postVideo, "YouTubeVideo")

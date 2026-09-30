@@ -101,7 +101,7 @@ def _optional_video_asset(filename):
     return Path(VIDEO_FOLDER / path.name)
 
 
-def post_video_tk(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime='', thumbnail_path=None):
+def post_video_tk(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime='', description='', thumbnail_path=None):
     # 生成文件的完整路径
     account_file = [Path(COOKIES_FOLDER / file) for file in account_file]
     files = [Path(VIDEO_FOLDER / file) for file in files]
@@ -123,6 +123,7 @@ def post_video_tk(title,files,tags,account_file,category=TencentZoneTypes.LIFEST
                 tags,
                 publish_datetimes or 0,
                 cookie,
+                description=description,
                 thumbnail_path=_optional_video_asset(thumbnail_path),
             )
             asyncio.run(app.main(), debug=False)
@@ -160,28 +161,44 @@ def _post_with_browser_uploader(
     files,
     tags,
     account_file,
+    description="",
 ):
     account_paths = [Path(COOKIES_FOLDER / file) for file in account_file]
     video_paths = [Path(VIDEO_FOLDER / file) for file in files]
     for video_path in video_paths:
         for account_path in account_paths:
-            publisher = publisher_class(title, video_path, tags, account_path)
+            publisher = publisher_class(
+                title,
+                video_path,
+                tags,
+                account_path,
+                description=description,
+            )
             asyncio.run(publisher.main(), debug=False)
 
 
 def post_video_x(title, files, tags, account_file, category=None, enableTimer=False,
-                 videos_per_day=1, daily_times=None, start_days=0, endpublishTime=''):
-    _post_with_browser_uploader(XWebVideo, title, files, tags, account_file)
+                 videos_per_day=1, daily_times=None, start_days=0, endpublishTime='',
+                 description=''):
+    _post_with_browser_uploader(
+        XWebVideo, title, files, tags, account_file, description=description
+    )
 
 
 def post_video_instagram(title, files, tags, account_file, category=None, enableTimer=False,
-                         videos_per_day=1, daily_times=None, start_days=0, endpublishTime=''):
-    _post_with_browser_uploader(InstagramWebVideo, title, files, tags, account_file)
+                         videos_per_day=1, daily_times=None, start_days=0, endpublishTime='',
+                         description=''):
+    _post_with_browser_uploader(
+        InstagramWebVideo, title, files, tags, account_file, description=description
+    )
 
 
 def post_video_facebook(title, files, tags, account_file, category=None, enableTimer=False,
-                        videos_per_day=1, daily_times=None, start_days=0, endpublishTime=''):
-    _post_with_browser_uploader(FacebookWebVideo, title, files, tags, account_file)
+                        videos_per_day=1, daily_times=None, start_days=0, endpublishTime='',
+                        description=''):
+    _post_with_browser_uploader(
+        FacebookWebVideo, title, files, tags, account_file, description=description
+    )
 
 
 def post_video_alipay(title, files, tags, account_file, category=None, enableTimer=False,

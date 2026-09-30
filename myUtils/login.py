@@ -360,7 +360,7 @@ async def youtube_cookie_gen(id, status_queue):
 
 
 async def _web_platform_cookie_gen(platform_type, id, status_queue):
-    filename = f"web-{platform_type}-{uuid.uuid4()}.json"
+    filename = f"web-{platform_type}-{uuid.uuid4()}"
     account_path = Path(COOKIES_FOLDER) / filename
     account_path.parent.mkdir(parents=True, exist_ok=True)
     status_queue.put("browser_opened")
@@ -368,6 +368,8 @@ async def _web_platform_cookie_gen(platform_type, id, status_queue):
     if not result["success"]:
         if account_path.is_file():
             account_path.unlink()
+        elif account_path.is_dir():
+            shutil.rmtree(account_path)
         status_queue.put("500")
         return
     _record_account(platform_type, filename, id)

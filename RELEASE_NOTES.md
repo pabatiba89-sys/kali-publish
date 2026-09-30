@@ -1,6 +1,8 @@
 # Unreleased
 
 - X、Instagram 和 Facebook 改为本机 Chrome 登录与网页发布，移除官方 API 凭据导入。
+- X、Instagram 和 Facebook 的首次登录改用普通 Chrome 独立资料目录，修复使用 Google 账号登录时反复进入“重试”页。
+- X、Instagram、Facebook 和 TikTok 发布补齐正文字段传递。
 - 新增支付宝生活号浏览器登录、视频发布、封面和合集选择。
 - 迁移 TikTok 新版 Studio 上传页选择器，支持封面上传，并保留正确的 5 分钟定时取整。
 - YouTube 发布接口补齐简介、封面、播放列表与可见性参数。

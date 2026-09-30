@@ -99,6 +99,7 @@ def publish_videos(payload: dict) -> None:
         platform["publisher"](
             *arguments,
             end_publish_time,
+            payload.get("description") or payload.get("content", ""),
             payload.get("thumbnailPath") or payload.get("thumbnail"),
         )
     elif platform_type == 6:
@@ -117,6 +118,12 @@ def publish_videos(payload: dict) -> None:
             payload.get("description", ""),
             payload.get("thumbnailPath") or payload.get("thumbnail"),
             payload.get("collectionName"),
+        )
+    elif platform_type in (7, 8, 9):
+        platform["publisher"](
+            *arguments,
+            end_publish_time,
+            payload.get("description") or payload.get("content", ""),
         )
     else:
         platform["publisher"](*arguments, end_publish_time)

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
+import subprocess
+from contextlib import closing
 from pathlib import Path
 
 from playwright.async_api import Locator, Page, Playwright, async_playwright
 
 from conf import BASE_DIR, LOCAL_CHROME_HEADLESS
 from utils.base_social_media import set_init_script
-from utils.browser_runtime import chromium_launch_options
+from utils.browser_runtime import chromium_launch_options, resolve_chrome_executable
 from utils.log import facebook_logger, instagram_logger, x_logger
 
 
@@ -17,6 +20,7 @@ WEB_PLATFORMS = {
         "login_url": "https://x.com/i/flow/login",
         "home_url": "https://x.com/home",
         "cookies": {"auth_token"},
+        "history_patterns": ("https://x.com/home%",),
         "logger": x_logger,
     },
     8: {
@@ -24,6 +28,10 @@ WEB_PLATFORMS = {
         "login_url": "https://www.instagram.com/accounts/login/",
         "home_url": "https://www.instagram.com/",
         "cookies": {"sessionid"},
+        "history_patterns": (
+            "https://www.instagram.com/",
+            "https://www.instagram.com/?%",
+        ),
         "logger": instagram_logger,
     },
     9: {
@@ -31,6 +39,11 @@ WEB_PLATFORMS = {
         "login_url": "https://www.facebook.com/login/",
         "home_url": "https://www.facebook.com/",
         "cookies": {"c_user", "xs"},
+        "history_patterns": (
+            "https://www.facebook.com/",
+            "https://www.facebook.com/?%",
+            "https://www.facebook.com/home.php%",
+        ),
         "logger": facebook_logger,
     },
 }
@@ -48,56 +61,120 @@ async def _has_login_cookies(context, required: set[str]) -> bool:
     return required.issubset(names)
 
 
-async def browser_cookie_gen(platform_type: int, account_file) -> dict:
-    """Open installed Chrome for interactive sign-in and save Playwright storage state."""
-    config = _config(platform_type)
-    destination = Path(account_file)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    logger = config["logger"]
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(**chromium_launch_options(headless=False))
-        context = await browser.new_context()
-        context = await set_init_script(context)
-        page = await context.new_page()
-        await page.goto(config["login_url"], wait_until="domcontentloaded", timeout=120000)
-        logger.info(f"请在弹出的 Chrome 窗口完成 {config['name']} 登录")
-        success = False
+def _authenticated_url_from_history(profile_dir: Path, patterns: tuple[str, ...]) -> str:
+    """Read only the most recent authenticated URL from a dedicated Chrome profile."""
+    for history_path in (profile_dir / "Default" / "History", profile_dir / "History"):
+        if not history_path.is_file():
+            continue
         try:
-            for _ in range(600):
-                if await _has_login_cookies(context, config["cookies"]):
-                    await page.goto(config["home_url"], wait_until="domcontentloaded", timeout=120000)
-                    await page.wait_for_timeout(2000)
-                    if "login" not in page.url.lower():
-                        success = True
-                        break
-                await asyncio.sleep(1)
-            if success:
-                await context.storage_state(path=destination)
-                try:
-                    destination.chmod(0o600)
-                except OSError:
-                    pass
-        finally:
-            current_url = page.url
-            await context.close()
-            await browser.close()
+            uri = f"{history_path.resolve().as_uri()}?mode=ro"
+            where = " OR ".join("url LIKE ?" for _ in patterns)
+            with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as connection:
+                row = connection.execute(
+                    f"SELECT url FROM urls WHERE {where} "
+                    "ORDER BY last_visit_time DESC LIMIT 1",
+                    patterns,
+                ).fetchone()
+            if row:
+                return str(row[0])
+        except (OSError, sqlite3.Error):
+            continue
+    return ""
+
+
+def _stop_chrome_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+async def browser_cookie_gen(platform_type: int, account_file) -> dict:
+    """Use a regular Chrome profile so Google OAuth does not reject the login browser."""
+    config = _config(platform_type)
+    profile_dir = Path(account_file)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        profile_dir.chmod(0o700)
+    except OSError:
+        pass
+    logger = config["logger"]
+    chrome = resolve_chrome_executable()
+    process = subprocess.Popen(
+        [
+            str(chrome),
+            f"--user-data-dir={profile_dir}",
+            "--profile-directory=Default",
+            "--no-first-run",
+            "--new-window",
+            config["login_url"],
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    logger.info(f"请在弹出的普通 Chrome 窗口完成 {config['name']} 登录")
+    current_url = ""
+    try:
+        for _ in range(600):
+            current_url = _authenticated_url_from_history(
+                profile_dir, config["history_patterns"]
+            )
+            if current_url:
+                await asyncio.sleep(2)
+                break
+            if process.poll() is not None:
+                current_url = _authenticated_url_from_history(
+                    profile_dir, config["history_patterns"]
+                )
+                break
+            await asyncio.sleep(1)
+    finally:
+        _stop_chrome_process(process)
+    success = bool(current_url)
     return {
         "success": success,
         "status": "logged_in" if success else "timeout",
         "message": "登录成功" if success else "登录未完成或已超时",
-        "account_file": str(destination),
+        "account_file": str(profile_dir),
         "current_url": current_url,
     }
+
+
+async def _open_account_context(playwright: Playwright, account_file, headless: bool):
+    account_path = Path(account_file)
+    options = chromium_launch_options(headless=headless)
+    if account_path.is_dir():
+        context = await playwright.chromium.launch_persistent_context(
+            user_data_dir=str(account_path), **options
+        )
+        return context, None
+    browser = await playwright.chromium.launch(**options)
+    context = await browser.new_context(storage_state=account_path)
+    return context, browser
+
+
+async def _close_account_context(context, browser) -> None:
+    await context.close()
+    if browser is not None:
+        await browser.close()
 
 
 async def _browser_cookie_auth(playwright: Playwright, platform_type: int, account_file) -> bool:
     config = _config(platform_type)
     account_path = Path(account_file)
-    if not account_path.is_file():
+    if not account_path.exists():
         return False
-    browser = await playwright.chromium.launch(**chromium_launch_options(headless=True))
+    context = None
+    browser = None
     try:
-        context = await browser.new_context(storage_state=account_path)
+        context, browser = await _open_account_context(
+            playwright, account_path, headless=True
+        )
         context = await set_init_script(context)
         page = await context.new_page()
         await page.goto(config["home_url"], wait_until="domcontentloaded", timeout=120000)
@@ -109,7 +186,8 @@ async def _browser_cookie_auth(playwright: Playwright, platform_type: int, accou
     except Exception:
         return False
     finally:
-        await browser.close()
+        if context is not None:
+            await _close_account_context(context, browser)
 
 
 async def browser_cookie_auth(platform_type: int, account_file) -> bool:
@@ -163,17 +241,30 @@ class BrowserVideoPublisher:
     platform_type: int
     platform_slug: str
 
-    def __init__(self, title, file_path, tags, account_file, headless=LOCAL_CHROME_HEADLESS):
+    def __init__(
+        self,
+        title,
+        file_path,
+        tags,
+        account_file,
+        description="",
+        headless=LOCAL_CHROME_HEADLESS,
+    ):
         self.title = str(title or "")
         self.file_path = str(file_path)
         self.tags = [str(tag).lstrip("#") for tag in (tags or []) if str(tag).strip()]
         self.account_file = str(account_file)
+        self.description = str(description or "")
         self.headless = headless
 
     @property
     def caption(self) -> str:
         suffix = " ".join(f"#{tag}" for tag in self.tags)
-        return "\n\n".join(part for part in (self.title.strip(), suffix) if part)
+        return "\n\n".join(
+            part
+            for part in (self.title.strip(), self.description.strip(), suffix)
+            if part
+        )
 
     async def publish(self, page: Page) -> None:
         raise NotImplementedError
@@ -183,10 +274,9 @@ class BrowserVideoPublisher:
             raise FileNotFoundError(f"Video file does not exist: {self.file_path}")
         if not await _browser_cookie_auth(playwright, self.platform_type, self.account_file):
             raise RuntimeError(f"{_config(self.platform_type)['name']} 登录态失效，请重新登录")
-        browser = await playwright.chromium.launch(
-            **chromium_launch_options(headless=self.headless)
+        context, browser = await _open_account_context(
+            playwright, self.account_file, headless=self.headless
         )
-        context = await browser.new_context(storage_state=self.account_file)
         context = await set_init_script(context)
         page = await context.new_page()
         page.set_default_timeout(60000)
@@ -205,8 +295,7 @@ class BrowserVideoPublisher:
                 pass
             raise
         finally:
-            await context.close()
-            await browser.close()
+            await _close_account_context(context, browser)
 
     async def main(self):
         async with async_playwright() as playwright:
