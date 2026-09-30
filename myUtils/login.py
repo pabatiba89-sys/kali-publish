@@ -11,6 +11,7 @@ from pathlib import Path
 from conf import COOKIES_FOLDER, DATABASE_PATH, LOCAL_CHROME_HEADLESS
 from utils.browser_runtime import chromium_launch_options
 from uploader.alipay_uploader.main import alipay_cookie_gen as alipay_browser_cookie_gen
+from uploader.tk_uploader.main import tiktok_cookie_gen as tiktok_browser_cookie_gen
 from uploader.web_publishers import browser_cookie_gen as social_browser_cookie_gen
 from uploader.youtube_uploader.main import youtube_cookie_gen as youtube_browser_cookie_gen
 
@@ -303,40 +304,15 @@ def _record_account(platform_type, filename, account_name):
 
 
 async def tiktok_cookie_gen(id, status_queue):
-    """Open a visible TikTok login window and persist the resulting browser state."""
-    filename = f"{uuid.uuid4()}.json"
+    """Sign in with regular Chrome and register its dedicated local profile."""
+    filename = f"tiktok-{uuid.uuid4()}"
     account_path = Path(COOKIES_FOLDER) / filename
     account_path.parent.mkdir(parents=True, exist_ok=True)
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(
-            **chromium_launch_options(headless=False, args=["--lang=en-GB"])
-        )
-        context = await browser.new_context()
-        context = await set_init_script(context)
-        page = await context.new_page()
-        await page.goto("https://www.tiktok.com/login?lang=en", wait_until="domcontentloaded")
-        status_queue.put("browser_opened")
-        logged_in = False
-        for _ in range(600):
-            if "/login" not in page.url.lower():
-                try:
-                    await page.goto(
-                        "https://www.tiktok.com/tiktokstudio/upload",
-                        wait_until="domcontentloaded",
-                    )
-                    await page.wait_for_timeout(2000)
-                    logged_in = "/login" not in page.url.lower()
-                except Exception:
-                    logged_in = False
-                if logged_in:
-                    break
-            await asyncio.sleep(1)
-        if logged_in:
-            await context.storage_state(path=account_path)
-        await context.close()
-        await browser.close()
-
-    if not logged_in:
+    status_queue.put("browser_opened")
+    result = await tiktok_browser_cookie_gen(account_path)
+    if not result["success"]:
+        if account_path.is_dir():
+            shutil.rmtree(account_path)
         status_queue.put("500")
         return
     _record_account(5, filename, id)

@@ -5,6 +5,7 @@
 - 账号列表的 Cookie 实时验证仅保留视频号，其他平台不再因列表刷新启动浏览器检查。
 - X、Instagram 和 Facebook 改为本机 Chrome 登录与网页发布，移除官方 API 凭据导入。
 - X、Instagram 和 Facebook 的首次登录改用普通 Chrome 独立资料目录，修复使用 Google 账号登录时反复进入“重试”页。
+- TikTok 首次登录也改用普通 Chrome 独立资料目录，修复选择 Google 登录时提示浏览器不受支持的问题，同时保留历史 JSON 登录态兼容。
 - YouTube、X、Instagram 和 Facebook 改用必需 Cookie 名称确认登录完成，修复 Chrome 历史被锁定时账号不保存，以及仅访问首页就被误判为已登录的问题。
 - X、Instagram、Facebook 和 TikTok 发布补齐正文字段传递。
 - 新增支付宝生活号浏览器登录、视频发布、封面和合集选择。

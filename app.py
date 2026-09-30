@@ -296,7 +296,7 @@ def create_app(test_config=None):
         elif (
             cookie_path.is_dir()
             and cookie_path.parent.resolve() == cookies_folder.resolve()
-            and cookie_path.name.startswith(("youtube-", "web-"))
+            and cookie_path.name.startswith(("tiktok-", "youtube-", "web-"))
         ):
             shutil.rmtree(cookie_path)
         return api_response(None, "account deleted")
