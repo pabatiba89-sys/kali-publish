@@ -16,7 +16,9 @@ Kali Publish 是本地运行的多平台视频发布后端，支持账号登录�
 | 8 | Instagram | Meta 用户令牌 | 是 | 否 |
 | 9 | Facebook | Facebook 主页令牌 | 是 | 是 |
 
-TikTok 和 YouTube 可通过 `/login` 打开本机 Chrome 完成登录。X、Instagram 和 Facebook 走官方 API，通过 `/api/accounts/import` 导入凭据，不使用网页点击脚本。
+TikTok 和 YouTube 可通过 `/login` 打开本机 Chrome 完成登录。YouTube 首次登录使用完全普通的 Chrome 窗口和独立资料目录，进入 YouTube Studio 后窗口会自动关闭，后续发布仅复用该专用登录态。X、Instagram 和 Facebook 走官方 API，通过 `/api/accounts/import` 导入凭据，不使用网页点击脚本。
+
+视频号发布会按现有业务规则追加 `#喀理系统` 和 `@岳同学AI`，并在新版发布页可用时选择第二个内容标记项。
 
 ## 下载与启动
 
@@ -130,6 +132,7 @@ start.bat
 - Instagram 需要专业账号、Facebook Login for Business 以及 `instagram_basic`、`instagram_content_publish` 权限。
 - Facebook 只发布到主页，需要 `pages_show_list`、`pages_read_engagement`、`pages_manage_posts` 权限。
 - API 凭据保存在数据目录的 `cookiesFile/` 中，文件权限设为仅当前用户可读写；删除账号时会一并删除凭据文件。
+- YouTube 专用 Chrome 资料也保存在 `cookiesFile/` 中，不会读取日常 Chrome 资料；删除 YouTube 账号时会一并删除该目录。
 
 ## 数据与配置
 

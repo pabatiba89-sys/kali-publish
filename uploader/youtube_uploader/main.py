@@ -12,6 +12,9 @@ Login is interactive (Google account, no QR code): the browser opens, the user s
 the storage_state is saved. Reuse it afterwards for fully unattended uploads.
 """
 import asyncio
+import sqlite3
+import subprocess
+from contextlib import closing
 from pathlib import Path
 
 from patchright.async_api import Page, Playwright, async_playwright
@@ -19,7 +22,7 @@ from patchright.async_api import Page, Playwright, async_playwright
 from conf import DEBUG_MODE
 from uploader.base_video import BaseVideoUploader
 from utils.base_social_media import set_init_script
-from utils.browser_runtime import chromium_launch_options
+from utils.browser_runtime import chromium_launch_options, resolve_chrome_executable
 from utils.log import youtube_logger
 
 try:
@@ -48,12 +51,65 @@ def _build_login_result(success, status, message, account_file, current_url=""):
     }
 
 
+def _studio_channel_from_history(profile_dir: Path) -> str:
+    """Return a visited Studio channel URL without reading cookie values."""
+    for history_path in (profile_dir / "Default" / "History", profile_dir / "History"):
+        if not history_path.is_file():
+            continue
+        try:
+            uri = f"{history_path.resolve().as_uri()}?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as connection:
+                row = connection.execute(
+                    "SELECT url FROM urls "
+                    "WHERE url LIKE 'https://studio.youtube.com/channel/%' "
+                    "ORDER BY last_visit_time DESC LIMIT 1"
+                ).fetchone()
+            if row:
+                return str(row[0])
+        except (OSError, sqlite3.Error):
+            # Chrome may briefly lock or replace the History database while navigating.
+            continue
+    return ""
+
+
+def _stop_chrome_process(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+async def _open_account_context(playwright: Playwright, account_file, headless: bool):
+    """Open either a new persistent profile or a legacy storage-state account."""
+    account_path = Path(account_file)
+    options = chromium_launch_options(headless=headless)
+    if YT_PROXY:
+        options["proxy"] = {"server": YT_PROXY}
+    if account_path.is_dir():
+        context = await playwright.chromium.launch_persistent_context(
+            user_data_dir=str(account_path), **options
+        )
+        return context, None
+    browser = await playwright.chromium.launch(**options)
+    context = await browser.new_context(storage_state=account_path)
+    return context, browser
+
+
+async def _close_account_context(context, browser) -> None:
+    await context.close()
+    if browser is not None:
+        await browser.close()
+
+
 async def cookie_auth(account_file) -> bool:
     """登录态是否仍有效：带 cookie 打开 Studio，没被踢到 Google 登录页且进入了频道页即有效。"""
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(**chromium_launch_options(headless=True))
+        context, browser = await _open_account_context(playwright, account_file, headless=True)
         try:
-            context = await browser.new_context(storage_state=account_file)
             context = await set_init_script(context)
             page = await context.new_page()
             await page.goto(STUDIO_URL, wait_until="domcontentloaded")
@@ -65,34 +121,65 @@ async def cookie_auth(account_file) -> bool:
         except Exception:
             return False
         finally:
-            await browser.close()
+            await _close_account_context(context, browser)
 
 
 async def youtube_cookie_gen(account_file, headless: bool = False):
-    """交互式登录：开浏览器让用户登录 Google/YouTube，进入频道页后保存 storage_state。"""
-    async with async_playwright() as playwright:
-        # 登录必须显形，让用户输账号密码/二步验证
-        browser = await playwright.chromium.launch(**chromium_launch_options(headless=False))
-        context = await browser.new_context()
-        context = await set_init_script(context)
-        page = await context.new_page()
-        await page.goto(STUDIO_URL, wait_until="domcontentloaded")
-        youtube_logger.info(_msg("🔐", "请在弹出的浏览器里登录 Google / YouTube 账号，登录后会自动保存"))
-        ok = False
+    """用普通 Chrome 登录，避免 Google 拒绝自动化浏览器。"""
+    profile_dir = Path(account_file)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        profile_dir.chmod(0o700)
+    except OSError:
+        pass
+
+    chrome = resolve_chrome_executable()
+    command = [
+        str(chrome),
+        f"--user-data-dir={profile_dir}",
+        "--profile-directory=Default",
+        "--no-first-run",
+        "--new-window",
+    ]
+    if YT_PROXY:
+        command.append(f"--proxy-server={YT_PROXY}")
+    command.append(STUDIO_URL)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    youtube_logger.info(
+        _msg("🔐", "请在普通 Chrome 窗口登录 Google / YouTube，进入 Studio 后会自动保存")
+    )
+
+    current_url = ""
+    try:
         for _ in range(600):  # 最多等 10 分钟
-            if "/channel/" in page.url:
-                await page.wait_for_timeout(2000)  # 让 cookie 落定
-                ok = True
+            current_url = _studio_channel_from_history(profile_dir)
+            if current_url:
+                await asyncio.sleep(2)  # 给 Chrome 时间把 cookie 和本地存储落盘
+                break
+            if process.poll() is not None:
+                current_url = _studio_channel_from_history(profile_dir)
                 break
             await asyncio.sleep(1)
-        if ok:
-            await context.storage_state(path=account_file)
-            youtube_logger.success(_msg("✅", f"YouTube 登录态已保存: {account_file}"))
-        else:
-            youtube_logger.error(_msg("😵", "等待登录超时，未保存登录态"))
-        await browser.close()
-        return _build_login_result(ok, "logged_in" if ok else "timeout",
-                                   "登录成功" if ok else "登录超时", account_file, page.url)
+    finally:
+        _stop_chrome_process(process)
+
+    ok = bool(current_url)
+    if ok:
+        youtube_logger.success(_msg("✅", f"YouTube 专用登录态已保存: {profile_dir}"))
+    else:
+        youtube_logger.error(_msg("😵", "登录未完成或已超时，未添加账号"))
+    return _build_login_result(
+        ok,
+        "logged_in" if ok else "timeout",
+        "登录成功" if ok else "登录未完成或已超时",
+        profile_dir,
+        current_url,
+    )
 
 
 async def youtube_setup(account_file, handle: bool = False, return_detail: bool = False, headless: bool = False):
@@ -199,11 +286,9 @@ class YouTubeVideo(BaseVideoUploader):
         self.headless = headless
 
     async def upload(self, playwright: Playwright) -> None:
-        launch_options = chromium_launch_options(headless=self.headless)
-        if YT_PROXY:
-            launch_options["proxy"] = {"server": YT_PROXY}
-        browser = await playwright.chromium.launch(**launch_options)
-        context = await browser.new_context(storage_state=self.account_file)
+        context, browser = await _open_account_context(
+            playwright, self.account_file, headless=self.headless
+        )
         context = await set_init_script(context)
         page = await context.new_page()
         page.set_default_timeout(60000)
@@ -212,7 +297,7 @@ class YouTubeVideo(BaseVideoUploader):
         await page.goto(UPLOAD_URL, wait_until="domcontentloaded")
         await page.wait_for_timeout(3000)
         if "accounts.google.com" in page.url or "signin" in page.url.lower():
-            await browser.close()
+            await _close_account_context(context, browser)
             raise RuntimeError("YouTube 登录态失效，请重新执行 login")
 
         # 1) 选择视频文件
@@ -322,12 +407,13 @@ class YouTubeVideo(BaseVideoUploader):
             youtube_logger.success(_msg("🥳", f"发布完成（{self.visibility}）{(' ' + video_url) if video_url else ''}"))
 
         # 刷新 cookie
-        try:
-            await context.storage_state(path=self.account_file)
-        except Exception:
-            pass
+        if Path(self.account_file).is_file():
+            try:
+                await context.storage_state(path=self.account_file)
+            except Exception:
+                pass
         await page.wait_for_timeout(2000)
-        await browser.close()
+        await _close_account_context(context, browser)
 
     async def main(self):
         async with async_playwright() as playwright:

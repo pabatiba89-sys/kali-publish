@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import threading
@@ -230,6 +231,12 @@ def create_app(test_config=None):
         cookie_path = cookies_folder / row["filePath"]
         if cookie_path.is_file():
             cookie_path.unlink()
+        elif (
+            cookie_path.is_dir()
+            and cookie_path.parent.resolve() == cookies_folder.resolve()
+            and cookie_path.name.startswith("youtube-")
+        ):
+            shutil.rmtree(cookie_path)
         return api_response(None, "account deleted")
 
     @app.post("/updateUserinfo")

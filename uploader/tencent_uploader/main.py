@@ -162,6 +162,7 @@ class TencentVideo(object):
         # 检测上传状态
         await self.detect_upload_status(page)
         await self.add_original(page)
+        await self.add_mark(page)
 
         if self.enable_timer:
             publish_date = parse_publish_date(self.endpublishTime)
@@ -239,7 +240,11 @@ class TencentVideo(object):
         for index, tag in enumerate(self.tags, start=1):
             await page.keyboard.type("#" + tag)
             await page.keyboard.press("Space")
-        tencent_logger.info(f"成功添加hashtag: {len(self.tags)}")
+        await page.keyboard.type("#喀理系统")
+        await page.keyboard.press("Space")
+        await page.keyboard.type("@岳同学AI")
+        await page.keyboard.press("Space")
+        tencent_logger.info(f"成功添加hashtag: {len(self.tags) + 1}，并添加 @岳同学AI")
 
     async def add_collection(self, page):
         collection_elements = page.get_by_text("添加到合集").locator("xpath=following-sibling::div").locator(
@@ -269,6 +274,20 @@ class TencentVideo(object):
             declare_button = page.locator('div.weui-desktop-dialog__ft button:has-text("声明原创")').first
             if await declare_button.count():
                 await declare_button.click()
+
+    async def add_mark(self, page):
+        """选择视频号新版发布页的第二个内容标记项。"""
+        mark_selector = page.locator("div.mark-tag-select")
+        if not await mark_selector.count():
+            return
+        await mark_selector.first.click()
+        await page.wait_for_timeout(1000)
+        options = page.locator("div.mark-tag-options .mark-tag-option")
+        if await options.count() > 1:
+            await options.nth(1).click()
+            await page.wait_for_timeout(1000)
+        else:
+            tencent_logger.warning("  [-] 未找到视频号内容标记的第二个选项，已跳过")
 
     async def main(self):
         async with async_playwright() as playwright:

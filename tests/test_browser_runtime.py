@@ -31,6 +31,13 @@ class BrowserRuntimeTests(unittest.TestCase):
             },
         )
 
+    def test_resolves_configured_regular_chrome(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            chrome = Path(temporary_directory) / "chrome"
+            chrome.touch()
+            with patch.object(browser_runtime, "LOCAL_CHROME_PATH", str(chrome)):
+                self.assertEqual(browser_runtime.resolve_chrome_executable(), chrome.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

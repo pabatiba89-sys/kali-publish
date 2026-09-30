@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 import sqlite3
 
 from playwright.async_api import async_playwright
@@ -341,13 +342,15 @@ async def tiktok_cookie_gen(id, status_queue):
 
 
 async def youtube_cookie_gen(id, status_queue):
-    """Use the existing YouTube Studio login flow and register the saved state."""
-    filename = f"{uuid.uuid4()}.json"
+    """Sign in with regular Chrome and register its dedicated local profile."""
+    filename = f"youtube-{uuid.uuid4()}"
     account_path = Path(COOKIES_FOLDER) / filename
     account_path.parent.mkdir(parents=True, exist_ok=True)
     status_queue.put("browser_opened")
     result = await youtube_browser_cookie_gen(account_path)
     if not result["success"]:
+        if account_path.is_dir():
+            shutil.rmtree(account_path)
         status_queue.put("500")
         return
     _record_account(6, filename, id)
