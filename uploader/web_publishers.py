@@ -10,7 +10,11 @@ from playwright.async_api import Locator, Page, Playwright, async_playwright
 
 from conf import BASE_DIR, LOCAL_CHROME_HEADLESS
 from utils.base_social_media import set_init_script
-from utils.browser_runtime import chromium_launch_options, resolve_chrome_executable
+from utils.browser_runtime import (
+    chrome_profile_has_cookies,
+    chromium_launch_options,
+    resolve_chrome_executable,
+)
 from utils.log import facebook_logger, instagram_logger, x_logger
 
 
@@ -20,7 +24,7 @@ WEB_PLATFORMS = {
         "login_url": "https://x.com/i/flow/login",
         "home_url": "https://x.com/home",
         "cookies": {"auth_token"},
-        "history_patterns": ("https://x.com/home%",),
+        "cookie_domains": ("x.com",),
         "logger": x_logger,
     },
     8: {
@@ -28,10 +32,7 @@ WEB_PLATFORMS = {
         "login_url": "https://www.instagram.com/accounts/login/",
         "home_url": "https://www.instagram.com/",
         "cookies": {"sessionid"},
-        "history_patterns": (
-            "https://www.instagram.com/",
-            "https://www.instagram.com/?%",
-        ),
+        "cookie_domains": ("instagram.com",),
         "logger": instagram_logger,
     },
     9: {
@@ -39,11 +40,7 @@ WEB_PLATFORMS = {
         "login_url": "https://www.facebook.com/login/",
         "home_url": "https://www.facebook.com/",
         "cookies": {"c_user", "xs"},
-        "history_patterns": (
-            "https://www.facebook.com/",
-            "https://www.facebook.com/?%",
-            "https://www.facebook.com/home.php%",
-        ),
+        "cookie_domains": ("facebook.com",),
         "logger": facebook_logger,
     },
 }
@@ -121,16 +118,17 @@ async def browser_cookie_gen(platform_type: int, account_file) -> dict:
     current_url = ""
     try:
         for _ in range(600):
-            current_url = _authenticated_url_from_history(
-                profile_dir, config["history_patterns"]
-            )
-            if current_url:
+            if chrome_profile_has_cookies(
+                profile_dir, config["cookie_domains"], config["cookies"]
+            ):
+                current_url = config["home_url"]
                 await asyncio.sleep(2)
                 break
             if process.poll() is not None:
-                current_url = _authenticated_url_from_history(
-                    profile_dir, config["history_patterns"]
-                )
+                if chrome_profile_has_cookies(
+                    profile_dir, config["cookie_domains"], config["cookies"]
+                ):
+                    current_url = config["home_url"]
                 break
             await asyncio.sleep(1)
     finally:

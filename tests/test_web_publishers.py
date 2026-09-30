@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from queue import Queue
 from unittest.mock import patch
@@ -90,7 +91,7 @@ class BrowserPublisherTests(unittest.IsolatedAsyncioTestCase):
             default = Path(directory) / "Default"
             default.mkdir()
             history = default / "History"
-            with sqlite3.connect(history) as connection:
+            with closing(sqlite3.connect(history)) as connection:
                 connection.execute(
                     "CREATE TABLE urls (url TEXT, last_visit_time INTEGER)"
                 )
@@ -102,6 +103,7 @@ class BrowserPublisherTests(unittest.IsolatedAsyncioTestCase):
                     "INSERT INTO urls VALUES (?, ?)",
                     ("https://x.com/home", 2),
                 )
+                connection.commit()
             self.assertEqual(
                 _authenticated_url_from_history(
                     Path(directory), ("https://x.com/home%",)

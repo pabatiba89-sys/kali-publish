@@ -22,7 +22,11 @@ from patchright.async_api import Page, Playwright, async_playwright
 from conf import DEBUG_MODE
 from uploader.base_video import BaseVideoUploader
 from utils.base_social_media import set_init_script
-from utils.browser_runtime import chromium_launch_options, resolve_chrome_executable
+from utils.browser_runtime import (
+    chrome_profile_has_cookies,
+    chromium_launch_options,
+    resolve_chrome_executable,
+)
 from utils.log import youtube_logger
 
 try:
@@ -157,12 +161,21 @@ async def youtube_cookie_gen(account_file, headless: bool = False):
     current_url = ""
     try:
         for _ in range(600):  # 最多等 10 分钟
-            current_url = _studio_channel_from_history(profile_dir)
-            if current_url:
+            if chrome_profile_has_cookies(
+                profile_dir,
+                ("youtube.com",),
+                {"LOGIN_INFO", "SAPISID"},
+            ):
+                current_url = STUDIO_URL
                 await asyncio.sleep(2)  # 给 Chrome 时间把 cookie 和本地存储落盘
                 break
             if process.poll() is not None:
-                current_url = _studio_channel_from_history(profile_dir)
+                if chrome_profile_has_cookies(
+                    profile_dir,
+                    ("youtube.com",),
+                    {"LOGIN_INFO", "SAPISID"},
+                ):
+                    current_url = STUDIO_URL
                 break
             await asyncio.sleep(1)
     finally:

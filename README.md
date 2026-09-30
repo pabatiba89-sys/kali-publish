@@ -99,7 +99,7 @@ start.bat
 GET /login?type=7&id=brand-x
 ```
 
-返回 `browser_opened` 后，在弹出的 Chrome 窗口中登录；服务返回 `200` 即代表账号已保存。其他平台只需替换 `type`。登录态保存在数据目录的 `cookiesFile/`，不会读取日常 Chrome 资料；删除账号时会一并删除对应登录态。
+返回 `browser_opened` 后，在弹出的 Chrome 窗口中登录，并保持窗口打开直到服务返回 `200`，此时账号才已保存。其他平台只需替换 `type`。YouTube、X、Instagram 和 Facebook 会通过专用 Chrome 资料中必需的 Cookie 名称确认登录完成，不依赖可能被锁定或误判的浏览历史，也不读取 Cookie 内容。登录态保存在数据目录的 `cookiesFile/`，不会读取日常 Chrome 资料；删除账号时会一并删除对应登录态。
 
 X、Instagram、Facebook 和 TikTok 可传 `description` 或 `content`；YouTube 还可传 `description`、`thumbnailPath`、`playlist`、`visibility`；TikTok 可传 `thumbnailPath`；支付宝生活号可传 `description`、`thumbnailPath`、`collectionName`。封面文件需要先通过 `/upload` 上传，并传入返回的 `filepath`。
 

@@ -1,6 +1,8 @@
 import os
 import platform
 import shutil
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from conf import LOCAL_CHROME_PATH
@@ -18,6 +20,50 @@ def chromium_launch_options(headless: bool, args=None) -> dict:
         options["channel"] = "chrome"
 
     return options
+
+
+def chrome_profile_has_cookies(
+    profile_dir: Path, domains: tuple[str, ...], required_names: set[str]
+) -> bool:
+    """Check Chrome cookie names without reading or decrypting their values."""
+    required = {str(name) for name in required_names if str(name)}
+    normalized_domains = tuple(
+        str(domain).lower().lstrip(".") for domain in domains if str(domain).strip()
+    )
+    if not required or not normalized_domains:
+        return False
+    cookie_paths = (
+        profile_dir / "Default" / "Cookies",
+        profile_dir / "Default" / "Network" / "Cookies",
+        profile_dir / "Cookies",
+        profile_dir / "Network" / "Cookies",
+    )
+    host_conditions = " OR ".join(
+        "(LOWER(host_key) = ? OR LOWER(host_key) LIKE ?)" for _ in normalized_domains
+    )
+    name_placeholders = ", ".join("?" for _ in required)
+    host_params = [
+        value
+        for domain in normalized_domains
+        for value in (domain, f"%.{domain}")
+    ]
+    for cookie_path in cookie_paths:
+        if not cookie_path.is_file():
+            continue
+        try:
+            uri = f"{cookie_path.resolve().as_uri()}?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as connection:
+                rows = connection.execute(
+                    f"SELECT DISTINCT name FROM cookies WHERE ({host_conditions}) "
+                    f"AND name IN ({name_placeholders})",
+                    (*host_params, *sorted(required)),
+                ).fetchall()
+            present = {str(row[0]) for row in rows}
+            if required.issubset(present):
+                return True
+        except (OSError, sqlite3.Error):
+            continue
+    return False
 
 
 def resolve_chrome_executable() -> Path:
