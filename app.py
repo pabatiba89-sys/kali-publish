@@ -1,11 +1,16 @@
 import asyncio
+import ipaddress
 import shutil
+import socket
 import sys
 import threading
 import time
 import uuid
 from pathlib import Path
 from queue import Queue
+from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -46,6 +51,60 @@ LOGIN_HANDLERS = {
 
 def api_response(data=None, message=None, status=200):
     return jsonify({"code": status, "msg": message, "data": data}), status
+
+
+def _validate_remote_url(video_url: str) -> None:
+    parsed = urlsplit(video_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("videoUrl must be a public HTTP or HTTPS URL")
+    try:
+        default_port = 80 if parsed.scheme == "http" else 443
+        addresses = {
+            entry[4][0]
+            for entry in socket.getaddrinfo(
+                parsed.hostname, parsed.port or default_port, type=socket.SOCK_STREAM
+            )
+        }
+    except socket.gaierror as exc:
+        raise ValueError("videoUrl host cannot be resolved") from exc
+    if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
+        raise ValueError("videoUrl must not target a private or local address")
+
+
+class _SafeRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_remote_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _download_remote_file(video_url: str, destination: Path, max_bytes: int) -> None:
+    _validate_remote_url(video_url)
+    request_object = Request(video_url, headers={"User-Agent": "KaliPublish/1.0"})
+    opener = build_opener(_SafeRedirectHandler())
+    with opener.open(request_object, timeout=120) as response, destination.open("wb") as output:
+        content_length = response.headers.get("Content-Length")
+        if content_length and int(content_length) > max_bytes:
+            raise ValueError("remote video exceeds the upload size limit")
+        downloaded = 0
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            downloaded += len(chunk)
+            if downloaded > max_bytes:
+                raise ValueError("remote video exceeds the upload size limit")
+            output.write(chunk)
+
+
+def _remote_filename(video_url: str, custom_filename=None) -> str:
+    parsed = urlsplit(video_url)
+    source_name = secure_filename(unquote(Path(parsed.path).name)) or "video.mp4"
+    if not custom_filename:
+        return source_name
+    custom_name = secure_filename(str(custom_filename)) or "video"
+    if Path(custom_name).suffix:
+        return custom_name
+    return f"{custom_name}{Path(source_name).suffix or '.mp4'}"
 
 
 def create_app(test_config=None):
@@ -107,6 +166,45 @@ def create_app(test_config=None):
             record_id = cursor.lastrowid
         return api_response(
             {"id": record_id, "filename": filename, "filepath": stored_name, "filesize": size_mb}
+        )
+
+    @app.post("/uploadFromUrl")
+    def upload_from_url():
+        payload = request.get_json(silent=True) or {}
+        video_url = str(payload.get("videoUrl") or "").strip()
+        if not video_url:
+            return api_response(None, "videoUrl is required", 400)
+        try:
+            filename = _remote_filename(video_url, payload.get("filename"))
+        except (TypeError, ValueError):
+            return api_response(None, "invalid videoUrl or filename", 400)
+        stored_name = f"{uuid.uuid4()}_{filename}"
+        destination = video_folder / stored_name
+        try:
+            _download_remote_file(video_url, destination, int(app.config["MAX_CONTENT_LENGTH"]))
+            size_mb = round(destination.stat().st_size / (1024 * 1024), 2)
+            with connect(database_path) as connection:
+                cursor = connection.execute(
+                    "INSERT INTO file_records (filename, filesize, file_path) VALUES (?, ?, ?)",
+                    (filename, size_mb, stored_name),
+                )
+                record_id = cursor.lastrowid
+        except ValueError as exc:
+            if destination.is_file():
+                destination.unlink()
+            return api_response(None, str(exc), 400)
+        except (HTTPError, URLError, OSError) as exc:
+            if destination.is_file():
+                destination.unlink()
+            return api_response(None, f"failed to download video: {exc}", 502)
+        return api_response(
+            {
+                "id": record_id,
+                "filename": filename,
+                "filepath": stored_name,
+                "filesize": size_mb,
+                "original_url": video_url,
+            }
         )
 
     @app.get("/getFiles")

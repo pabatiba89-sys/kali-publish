@@ -60,6 +60,45 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/deleteFile?id={record['id']}").status_code, 200)
         self.assertEqual(self.client.get("/getFiles").get_json()["data"], [])
 
+    def test_upload_from_url_accepts_cross_origin_preflight(self):
+        response = self.client.options(
+            "/uploadFromUrl",
+            headers={
+                "Origin": "http://127.0.0.1:4321",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("Access-Control-Allow-Origin"),
+            "http://127.0.0.1:4321",
+        )
+
+    def test_upload_from_url_downloads_and_records_video(self):
+        def fake_download(_url, destination, _max_bytes):
+            destination.write_bytes(b"remote-video")
+
+        with patch.object(
+            app_module, "_download_remote_file", side_effect=fake_download, create=True
+        ):
+            response = self.client.post(
+                "/uploadFromUrl",
+                json={"videoUrl": "https://cdn.example.com/path/video.mp4"},
+                headers={"Origin": "http://127.0.0.1:4321"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("Access-Control-Allow-Origin"),
+            "http://127.0.0.1:4321",
+        )
+        record = response.get_json()["data"]
+        self.assertEqual(record["filename"], "video.mp4")
+        self.assertTrue((Path(self.application.config["VIDEO_FOLDER"]) / record["filepath"]).is_file())
+        files = self.client.get("/getFiles").get_json()["data"]
+        self.assertEqual(files[0]["file_path"], record["filepath"])
+
     def test_account_filter_is_parameterized(self):
         with closing(sqlite3.connect(self.application.config["DATABASE_PATH"])) as connection:
             connection.execute(

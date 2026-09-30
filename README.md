@@ -81,6 +81,7 @@ start.bat
 - `GET /health`：检查服务状态
 - `GET /api/platforms`：获取支持的平台
 - `POST /upload`：上传视频
+- `POST /uploadFromUrl`：从公网 HTTP/HTTPS 地址下载视频到本机，支持跨域预检
 - `GET /getFiles`：获取已上传视频
 - `DELETE /deleteFile`：删除视频
 - `GET /login`：打开浏览器登录任一支持平台
