@@ -114,6 +114,12 @@ async def check_cookie(type,file_path):
         case 6:
             from uploader.youtube_uploader.main import cookie_auth
             return await cookie_auth(Path(COOKIES_FOLDER / file_path))
+        case 7 | 8 | 9:
+            from uploader.web_publishers import browser_cookie_auth
+            return await browser_cookie_auth(type, Path(COOKIES_FOLDER / file_path))
+        case 10:
+            from uploader.alipay_uploader.main import cookie_auth
+            return await cookie_auth(Path(COOKIES_FOLDER / file_path))
         case _:
             return False
 

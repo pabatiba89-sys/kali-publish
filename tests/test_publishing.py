@@ -62,6 +62,53 @@ class PublishingDispatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not support scheduled publishing"):
             publishing.publish_videos(payload)
 
+    def test_youtube_metadata_is_forwarded(self):
+        publisher = Mock()
+        platform = {
+            "name": "YouTube",
+            "publisher": publisher,
+            "login": True,
+            "supportsSchedule": False,
+        }
+        payload = {
+            "type": 6,
+            "fileList": ["video.mp4"],
+            "accountList": ["account.json"],
+            "description": "description",
+            "thumbnailPath": "cover.png",
+            "playlist": "series",
+            "visibility": "unlisted",
+        }
+        with patch.dict(publishing.PLATFORMS, {6: platform}):
+            publishing.publish_videos(payload)
+        self.assertEqual(
+            publisher.call_args.args[-5:],
+            ("", "description", "cover.png", "series", "unlisted"),
+        )
+
+    def test_alipay_metadata_is_forwarded(self):
+        publisher = Mock()
+        platform = {
+            "name": "支付宝生活号",
+            "publisher": publisher,
+            "login": True,
+            "supportsSchedule": False,
+        }
+        payload = {
+            "type": 10,
+            "fileList": ["video.mp4"],
+            "accountList": ["account.json"],
+            "description": "description",
+            "thumbnail": "cover.png",
+            "collectionName": "series",
+        }
+        with patch.dict(publishing.PLATFORMS, {10: platform}):
+            publishing.publish_videos(payload)
+        self.assertEqual(
+            publisher.call_args.args[-4:],
+            ("", "description", "cover.png", "series"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

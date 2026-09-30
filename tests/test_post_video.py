@@ -21,6 +21,7 @@ class BrowserPublisherWiringTests(unittest.TestCase):
         )
         self.assertEqual(len(video_class.call_args.args), 5)
         self.assertEqual(video_class.call_args.args[3], 0)
+        self.assertIsNone(video_class.call_args.kwargs["thumbnail_path"])
         run.assert_called_once()
 
     @patch.object(postVideo.asyncio, "run")
@@ -33,6 +34,28 @@ class BrowserPublisherWiringTests(unittest.TestCase):
             "title", ["video.mp4"], ["tag"], ["account.json"], enableTimer=False
         )
         self.assertEqual(len(video_class.call_args.args), 4)
+        self.assertEqual(video_class.call_args.kwargs["visibility"], "public")
+        self.assertEqual(video_class.call_args.kwargs["description"], "")
+        run.assert_called_once()
+
+    @patch.object(postVideo.asyncio, "run")
+    @patch.object(postVideo, "AlipayVideo")
+    def test_alipay_constructor_receives_metadata(self, video_class, run):
+        instance = Mock()
+        instance.main.return_value = "alipay-main"
+        video_class.return_value = instance
+        postVideo.post_video_alipay(
+            "title",
+            ["video.mp4"],
+            ["tag"],
+            ["account.json"],
+            description="description",
+            thumbnail_path="cover.png",
+            collection_name="series",
+        )
+        self.assertEqual(video_class.call_args.kwargs["desc"], "description")
+        self.assertEqual(video_class.call_args.kwargs["thumbnail_path"].name, "cover.png")
+        self.assertEqual(video_class.call_args.kwargs["collection_name"], "series")
         run.assert_called_once()
 
 

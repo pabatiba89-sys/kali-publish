@@ -1,8 +1,9 @@
 # Unreleased
 
-- 新增 X、Instagram 和 Facebook 视频自动发布。
-- X 使用官方 v2 分片上传与发布接口。
-- Instagram 使用 Meta 官方 Reels 可恢复上传；Facebook 使用主页 Reels 发布接口。
+- X、Instagram 和 Facebook 改为本机 Chrome 登录与网页发布，移除官方 API 凭据导入。
+- 新增支付宝生活号浏览器登录、视频发布、封面和合集选择。
+- 迁移 TikTok 新版 Studio 上传页选择器，支持封面上传，并保留正确的 5 分钟定时取整。
+- YouTube 发布接口补齐简介、封面、播放列表与可见性参数。
 - TikTok 和 YouTube 新增本机浏览器登录入口，并修复真实发布时的参数错误。
 - YouTube 首次登录改用普通 Chrome 独立资料目录，避免 Google 拒绝自动化浏览器登录。
 - 同步视频号最新发布规则：追加业务话题和账号提及，并处理新版内容标记选项。

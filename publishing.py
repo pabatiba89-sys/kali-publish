@@ -1,4 +1,5 @@
 from myUtils.postVideo import (
+    post_video_alipay,
     post_video_facebook,
     post_video_instagram,
     post_video_DouYin,
@@ -37,16 +38,20 @@ PLATFORMS = {
         "accountMode": "browser", "supportsSchedule": False,
     },
     7: {
-        "name": "X", "publisher": post_video_x, "login": False,
-        "accountMode": "api", "supportsSchedule": False,
+        "name": "X", "publisher": post_video_x, "login": True,
+        "accountMode": "browser", "supportsSchedule": False,
     },
     8: {
-        "name": "Instagram", "publisher": post_video_instagram, "login": False,
-        "accountMode": "api", "supportsSchedule": False,
+        "name": "Instagram", "publisher": post_video_instagram, "login": True,
+        "accountMode": "browser", "supportsSchedule": False,
     },
     9: {
-        "name": "Facebook", "publisher": post_video_facebook, "login": False,
-        "accountMode": "api", "supportsSchedule": True,
+        "name": "Facebook", "publisher": post_video_facebook, "login": True,
+        "accountMode": "browser", "supportsSchedule": False,
+    },
+    10: {
+        "name": "支付宝生活号", "publisher": post_video_alipay, "login": True,
+        "accountMode": "browser", "supportsSchedule": False,
     },
 }
 
@@ -89,6 +94,29 @@ def publish_videos(payload: dict) -> None:
             payload.get("productLink", ""),
             payload.get("productTitle", ""),
             end_publish_time,
+        )
+    elif platform_type == 5:
+        platform["publisher"](
+            *arguments,
+            end_publish_time,
+            payload.get("thumbnailPath") or payload.get("thumbnail"),
+        )
+    elif platform_type == 6:
+        platform["publisher"](
+            *arguments,
+            end_publish_time,
+            payload.get("description", ""),
+            payload.get("thumbnailPath") or payload.get("thumbnail"),
+            payload.get("playlist"),
+            payload.get("visibility", "public"),
+        )
+    elif platform_type == 10:
+        platform["publisher"](
+            *arguments,
+            end_publish_time,
+            payload.get("description", ""),
+            payload.get("thumbnailPath") or payload.get("thumbnail"),
+            payload.get("collectionName"),
         )
     else:
         platform["publisher"](*arguments, end_publish_time)

@@ -1,8 +1,5 @@
 import asyncio
-import json
-import os
 import shutil
-import sqlite3
 import sys
 import threading
 import time
@@ -18,15 +15,18 @@ import conf
 from db import connect, initialize
 from myUtils.auth import check_cookie
 from myUtils.login import (
+    alipay_cookie_gen,
     douyin_cookie_gen,
+    facebook_cookie_gen,
     get_ks_cookie,
     get_tencent_cookie,
+    instagram_cookie_gen,
     tiktok_cookie_gen,
+    x_cookie_gen,
     youtube_cookie_gen,
     xiaohongshu_cookie_gen,
 )
 from publishing import PLATFORMS, publish_videos
-from uploader.official_api import PLATFORM_CREDENTIALS, load_credentials, validate_credentials
 from utils.browser_runtime import chromium_launch_options
 
 
@@ -37,6 +37,10 @@ LOGIN_HANDLERS = {
     4: get_ks_cookie,
     5: tiktok_cookie_gen,
     6: youtube_cookie_gen,
+    7: x_cookie_gen,
+    8: instagram_cookie_gen,
+    9: facebook_cookie_gen,
+    10: alipay_cookie_gen,
 }
 
 
@@ -76,52 +80,12 @@ def create_app(test_config=None):
                 "name": value["name"],
                 "supportsLogin": value["login"],
                 "accountMode": value.get("accountMode", "browser"),
-                "supportsCredentialImport": key in PLATFORM_CREDENTIALS,
+                "supportsCredentialImport": False,
                 "supportsSchedule": value.get("supportsSchedule", True),
             }
             for key, value in PLATFORMS.items()
         ]
         return api_response(data)
-
-    @app.post("/api/accounts/import")
-    def import_api_account():
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            return api_response(None, "JSON object required", 400)
-        try:
-            platform_type = int(payload["type"])
-        except (KeyError, TypeError, ValueError):
-            return api_response(None, "type must be an integer", 400)
-        account_name = str(payload.get("userName", "")).strip()
-        if not account_name:
-            return api_response(None, "userName must not be empty", 400)
-        try:
-            credentials = validate_credentials(platform_type, payload.get("credentials"))
-        except ValueError as exc:
-            return api_response(None, str(exc), 400)
-
-        filename = f"api-{uuid.uuid4()}.json"
-        destination = cookies_folder / filename
-        try:
-            destination.write_text(
-                json.dumps(credentials, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            os.chmod(destination, 0o600)
-            with connect(database_path) as connection:
-                cursor = connection.execute(
-                    "INSERT INTO user_info (type, filePath, userName, status) VALUES (?, ?, ?, ?)",
-                    (platform_type, filename, account_name, 1),
-                )
-                account_id = cursor.lastrowid
-        except Exception:
-            if destination.is_file():
-                destination.unlink()
-            raise
-        return api_response(
-            {"id": account_id, "type": platform_type, "userName": account_name},
-            "account imported",
-        )
 
     @app.post("/upload")
     def upload_file():
@@ -202,10 +166,7 @@ def create_app(test_config=None):
             for row in result:
                 platform_type = int(row[1])
                 try:
-                    if platform_type in PLATFORM_CREDENTIALS:
-                        load_credentials(cookies_folder / row[2], platform_type)
-                        valid = True
-                    elif platform_type in LOGIN_HANDLERS:
+                    if platform_type in LOGIN_HANDLERS:
                         valid = asyncio.run(check_cookie(platform_type, row[2]))
                     else:
                         valid = False

@@ -71,12 +71,13 @@ async def get_tiktok_cookie(account_file):
 
 
 class TiktokVideo(object):
-    def __init__(self, title, file_path, tags, publish_date, account_file):
+    def __init__(self, title, file_path, tags, publish_date, account_file, thumbnail_path=None):
         self.title = title
         self.file_path = file_path
         self.tags = tags
         self.publish_date = publish_date
         self.account_file = account_file
+        self.thumbnail_path = str(thumbnail_path) if thumbnail_path else None
         self.headless = LOCAL_CHROME_HEADLESS
         self.locator_base = None
 
@@ -85,7 +86,10 @@ class TiktokVideo(object):
         schedule_input_element = self.locator_base.get_by_label('Schedule')
         await schedule_input_element.wait_for(state='visible')  # 确保按钮可见
 
-        await schedule_input_element.click()
+        await schedule_input_element.click(force=True)
+        allow_button = self.locator_base.get_by_role("button", name="Allow").first
+        if await allow_button.count() and await allow_button.is_visible():
+            await allow_button.click()
         scheduled_picker = self.locator_base.locator('div.scheduled-picker')
         await scheduled_picker.locator('div.TUXInputBox').nth(1).click()
 
@@ -150,10 +154,8 @@ class TiktokVideo(object):
         context = await set_init_script(context)
         page = await context.new_page()
 
-        await page.goto("https://www.tiktok.com/creator-center/upload")
+        await page.goto("https://www.tiktok.com/tiktokstudio/upload?lang=en")
         tiktok_logger.info(f'[+]Uploading-------{self.title}.mp4')
-
-        await page.wait_for_url("https://www.tiktok.com/tiktokstudio/upload", timeout=10000)
 
         try:
             await page.wait_for_selector('iframe[data-tt="Upload_index_iframe"], div.upload-container', timeout=10000)
@@ -175,6 +177,8 @@ class TiktokVideo(object):
         await self.add_title_tags(page)
         # detact upload status
         await self.detect_upload_status(page)
+        if self.thumbnail_path:
+            await self.upload_thumbnail(page)
         if self.publish_date != 0:
             await self.set_schedule_time(page, self.publish_date)
 
@@ -212,41 +216,62 @@ class TiktokVideo(object):
         for index, tag in enumerate(self.tags, start=1):
             tiktok_logger.info("Setting the %s tag" % index)
             await page.keyboard.press("End")
-            await page.wait_for_timeout(1000)  # 等待1秒
+            await page.wait_for_timeout(1000)
             await page.keyboard.insert_text("#" + tag + " ")
             await page.keyboard.press("Space")
-            await page.wait_for_timeout(1000)  # 等待1秒
-
+            await page.wait_for_timeout(1000)
             await page.keyboard.press("Backspace")
             await page.keyboard.press("End")
 
-    async def click_publish(self, page):
-        success_flag_div = '#\\:r9\\:'
-        while True:
-            try:
-                publish_button = self.locator_base.locator('div.btn-post')
-                if await publish_button.count():
-                    await publish_button.click()
+    async def upload_thumbnail(self, page):
+        await self.locator_base.locator(".cover-container").click()
+        await self.locator_base.locator(".cover-edit-container").get_by_text(
+            "Upload cover", exact=False
+        ).click()
+        file_input = self.locator_base.locator(
+            'input[type="file"][accept*="image"]'
+        ).first
+        if await file_input.count():
+            await file_input.set_input_files(self.thumbnail_path)
+        else:
+            async with page.expect_file_chooser() as chooser_info:
+                await self.locator_base.locator(".upload-image-upload-area").click()
+            chooser = await chooser_info.value
+            await chooser.set_files(self.thumbnail_path)
+        confirm = self.locator_base.locator(
+            'div.cover-edit-panel:not(.hide-panel)'
+        ).get_by_role("button", name="Confirm")
+        await confirm.click()
+        await page.wait_for_timeout(1000)
 
-                await self.locator_base.locator(success_flag_div).wait_for(state="visible", timeout=3000)
+    async def click_publish(self, page):
+        deadline = asyncio.get_running_loop().time() + 300
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                publish_button = self.locator_base.locator(
+                    'div.button-group > button:has-text("Post"), div.btn-post button'
+                ).first
+                await publish_button.wait_for(state="visible", timeout=10000)
+                if await publish_button.get_attribute("disabled") is None:
+                    await publish_button.click()
+                await page.wait_for_url("**/tiktokstudio/content**", timeout=5000)
                 tiktok_logger.success("  [-] video published success")
-                break
+                return
             except Exception as e:
-                if await self.locator_base.locator(success_flag_div).count():
-                    tiktok_logger.success("  [-]video published success")
-                    break
-                else:
-                    tiktok_logger.exception(f"  [-] Exception: {e}")
-                    tiktok_logger.info("  [-] video publishing")
-                    await page.screenshot(full_page=True)
-                    await asyncio.sleep(0.5)
+                tiktok_logger.info(f"  [-] video publishing: {type(e).__name__}")
+                await asyncio.sleep(1)
+        raise TimeoutError("TikTok did not confirm publication within 5 minutes")
 
     async def detect_upload_status(self, page):
-        while True:
+        deadline = asyncio.get_running_loop().time() + 1800
+        while asyncio.get_running_loop().time() < deadline:
             try:
-                if await self.locator_base.locator('div.btn-post > button').get_attribute("disabled") is None:
+                publish_button = self.locator_base.locator(
+                    'div.button-group > button:has-text("Post"), div.btn-post > button'
+                ).first
+                if await publish_button.count() and await publish_button.get_attribute("disabled") is None:
                     tiktok_logger.info("  [-]video uploaded.")
-                    break
+                    return
                 else:
                     tiktok_logger.info("  [-] video uploading...")
                     await asyncio.sleep(2)
@@ -256,6 +281,7 @@ class TiktokVideo(object):
             except:
                 tiktok_logger.info("  [-] video uploading...")
                 await asyncio.sleep(2)
+        raise TimeoutError("TikTok video upload did not complete within 30 minutes")
 
     async def choose_base_locator(self, page):
         if await page.locator('iframe[data-tt="Upload_index_iframe"]').count():

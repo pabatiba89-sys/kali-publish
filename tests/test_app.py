@@ -1,6 +1,4 @@
 import io
-import json
-import stat
 import sqlite3
 import tempfile
 import unittest
@@ -31,47 +29,20 @@ class BackendApiTests(unittest.TestCase):
     def test_health_and_platforms(self):
         self.assertEqual(self.client.get("/health").get_json()["data"]["status"], "ok")
         platforms = self.client.get("/api/platforms").get_json()["data"]
-        self.assertEqual([item["type"] for item in platforms], [1, 2, 3, 4, 5, 6, 7, 8, 9])
-        x_platform = next(item for item in platforms if item["type"] == 7)
-        self.assertEqual(x_platform["accountMode"], "api")
-        self.assertTrue(x_platform["supportsCredentialImport"])
-        self.assertFalse(x_platform["supportsSchedule"])
-
-    def test_import_api_account_stores_secret_only_in_restricted_file(self):
-        token = "secret-token-that-must-not-be-returned"
-        response = self.client.post(
-            "/api/accounts/import",
-            json={
-                "type": 7,
-                "userName": "brand-x",
-                "credentials": {"access_token": token},
-            },
+        self.assertEqual(
+            [item["type"] for item in platforms],
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         )
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn(token, response.get_data(as_text=True))
-        account_id = response.get_json()["data"]["id"]
+        for platform_type in (7, 8, 9, 10):
+            platform = next(item for item in platforms if item["type"] == platform_type)
+            self.assertEqual(platform["accountMode"], "browser")
+            self.assertTrue(platform["supportsLogin"])
+            self.assertFalse(platform["supportsCredentialImport"])
+            self.assertFalse(platform["supportsSchedule"])
 
-        with closing(sqlite3.connect(self.application.config["DATABASE_PATH"])) as connection:
-            row = connection.execute(
-                "SELECT filePath, status FROM user_info WHERE id = ?", (account_id,)
-            ).fetchone()
-        credential_path = Path(self.application.config["COOKIES_FOLDER"]) / row[0]
-        stored = json.loads(credential_path.read_text(encoding="utf-8"))
-        self.assertEqual(stored, {"platform": "x", "access_token": token})
-        self.assertEqual(stat.S_IMODE(credential_path.stat().st_mode), 0o600)
-        self.assertEqual(row[1], 1)
-
-        valid_accounts = self.client.get("/getValidAccounts?name=brand-x").get_json()["data"]
-        self.assertEqual(valid_accounts[0][4], 1)
-
-    def test_import_api_account_validates_required_fields(self):
-        response = self.client.post(
-            "/api/accounts/import",
-            json={"type": 8, "userName": "brand-instagram", "credentials": {}},
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("access_token", response.get_json()["msg"])
-        self.assertIn("ig_user_id", response.get_json()["msg"])
+    def test_official_api_import_endpoint_is_removed(self):
+        response = self.client.post("/api/accounts/import", json={"type": 7})
+        self.assertEqual(response.status_code, 404)
 
     def test_upload_list_download_and_delete(self):
         response = self.client.post(
