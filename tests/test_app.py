@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import app as app_module
 
@@ -70,6 +70,26 @@ class BackendApiTests(unittest.TestCase):
         self.assertEqual(len(self.client.get("/getAccounts?name=alice").get_json()["data"]), 1)
         injected = self.client.get("/getAccounts?name=' OR 1=1 --").get_json()["data"]
         self.assertEqual(injected, [])
+
+    def test_valid_accounts_only_checks_tencent_cookie(self):
+        with closing(sqlite3.connect(self.application.config["DATABASE_PATH"])) as connection:
+            connection.executemany(
+                "INSERT INTO user_info (type, filePath, userName, status) VALUES (?, ?, ?, ?)",
+                [
+                    (2, "tencent.json", "video-channel", 1),
+                    (7, "x-profile", "x-account", 1),
+                ],
+            )
+            connection.commit()
+
+        cookie_check = AsyncMock(return_value=False)
+        with patch.object(app_module, "check_cookie", cookie_check):
+            accounts = self.client.get("/getValidAccounts").get_json()["data"]
+
+        cookie_check.assert_awaited_once_with(2, "tencent.json")
+        statuses = {int(account[1]): int(account[4]) for account in accounts}
+        self.assertEqual(statuses[2], 0)
+        self.assertEqual(statuses[7], 1)
 
     def test_delete_youtube_account_removes_dedicated_profile(self):
         profile_name = "youtube-test-profile"

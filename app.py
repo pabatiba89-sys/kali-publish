@@ -165,11 +165,10 @@ def create_app(test_config=None):
             result = [list(row) for row in rows]
             for row in result:
                 platform_type = int(row[1])
+                if platform_type != 2:
+                    continue
                 try:
-                    if platform_type in LOGIN_HANDLERS:
-                        valid = asyncio.run(check_cookie(platform_type, row[2]))
-                    else:
-                        valid = False
+                    valid = asyncio.run(check_cookie(platform_type, row[2]))
                 except Exception:
                     valid = False
                 if not valid:

@@ -85,7 +85,7 @@ start.bat
 - `DELETE /deleteFile`：删除视频
 - `GET /login`：打开浏览器登录任一支持平台
 - `GET /getAccounts`：获取发布账号
-- `GET /getValidAccounts`：检查浏览器登录态
+- `GET /getValidAccounts`：获取账号并仅实时验证视频号 Cookie，其他平台保留已存状态
 - `DELETE /deleteAccount`：删除发布账号
 - `POST /api/publish`：单次发布
 - `POST /api/publish/batch`：批量发布
