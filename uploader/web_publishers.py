@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 import subprocess
 from contextlib import closing
 from pathlib import Path
 
-from playwright.async_api import Locator, Page, Playwright, async_playwright
+from playwright.async_api import Locator, Page, Playwright, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from conf import BASE_DIR, LOCAL_CHROME_HEADLESS
 from utils.base_social_media import set_init_script
@@ -346,22 +347,42 @@ class InstagramWebVideo(BrowserVideoPublisher):
     platform_type = 8
     platform_slug = "instagram"
 
-    async def publish(self, page: Page) -> None:
+    async def open_composer(self, page: Page) -> Locator:
         await page.goto(
-            "https://www.instagram.com/create/select/",
+            "https://www.instagram.com/",
             wait_until="domcontentloaded",
             timeout=120000,
         )
-        file_input = page.locator('input[type="file"]').first
-        await file_input.wait_for(state="attached", timeout=30000)
-        await file_input.set_input_files(self.file_path)
-        await _click_text(page, ["Next", "下一步"], timeout=120000)
+        # The /create/select/ route resolves to the @create profile on the web.
+        # Open the real composer through the navigation instead.
+        later = page.get_by_role("button", name=re.compile(r"^(Not Now|以后再说|暂不)$", re.I))
         try:
-            await _click_text(page, ["Next", "下一步"], timeout=30000)
-        except TimeoutError:
+            await later.click(timeout=5000)
+        except PlaywrightTimeoutError:
             pass
+        create = await _first_visible([
+            page.locator('svg[aria-label="新帖子"], svg[aria-label="新建帖子"], svg[aria-label="New post"]'),
+            page.get_by_role("link", name=re.compile(r"^(Create|创建)$", re.I)),
+        ], timeout=60000)
+        await create.click()
+        file_input = page.locator('input[type="file"][accept*="video"]').first
+        await file_input.wait_for(state="attached", timeout=60000)
+        return file_input
+
+    async def prepare_caption(self, page: Page) -> Locator:
+        # First video upload can show a Reels explanation over the crop dialog.
+        onboarding = page.get_by_role("dialog").filter(
+            has_text=re.compile(r"视频帖现在会以 Reels|Video posts.*reels", re.I)
+        )
+        try:
+            await onboarding.get_by_role("button", name=re.compile(r"^(确定|OK|Got it)$", re.I)).click(timeout=5000)
+        except PlaywrightTimeoutError:
+            pass
+        await _click_text(page, ["Next", "Continue", "下一步", "继续"], timeout=120000)
+        await _click_text(page, ["Next", "Continue", "下一步", "继续"], timeout=60000)
         caption = await _first_visible(
             [
+                page.locator('[role="dialog"] [contenteditable="true"][role="textbox"]'),
                 page.locator('textarea[aria-label*="caption" i]'),
                 page.locator('textarea[placeholder*="caption" i]'),
                 page.locator('textarea'),
@@ -369,12 +390,19 @@ class InstagramWebVideo(BrowserVideoPublisher):
             timeout=60000,
         )
         await caption.fill(self.caption[:2200])
-        await _click_text(page, ["Share", "分享"], timeout=60000)
+        return caption
+
+    async def publish(self, page: Page) -> None:
+        file_input = await self.open_composer(page)
+        await file_input.set_input_files(self.file_path)
+        await self.prepare_caption(page)
+        await _click_text(page, ["Share", "分享", "发布"], timeout=60000)
         success = await _first_visible(
             [
                 page.get_by_text("Your reel has been shared", exact=False),
                 page.get_by_text("Your post has been shared", exact=False),
                 page.get_by_text("已分享", exact=False),
+                page.get_by_text("已发布", exact=False),
             ],
             timeout=180000,
         )

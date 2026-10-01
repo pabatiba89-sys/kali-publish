@@ -4,7 +4,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import Playwright, async_playwright
+from playwright.async_api import Playwright, TimeoutError as PlaywrightTimeoutError, async_playwright
 import os
 import asyncio
 from uploader.tk_uploader.tk_config import Tk_Locator
@@ -250,67 +250,48 @@ class TiktokVideo(object):
         context, browser = await _open_account_context(
             playwright, self.account_file, headless=self.headless
         )
-        context = await set_init_script(context)
-        page = await context.new_page()
-
-        await page.goto("https://www.tiktok.com/tiktokstudio/upload?lang=en")
-        tiktok_logger.info(f'[+]Uploading-------{self.title}.mp4')
-
         try:
-            await page.wait_for_selector('iframe[data-tt="Upload_index_iframe"], div.upload-container', timeout=10000)
-            tiktok_logger.info("Either iframe or div appeared.")
-        except Exception as e:
-            tiktok_logger.error("Neither iframe nor div appeared within the timeout.")
+            context = await set_init_script(context)
+            page = await context.new_page()
+            file_input = await self.open_upload_page(page)
+            tiktok_logger.info(f'[+]Uploading-------{self.title}.mp4')
+            await file_input.set_input_files(self.file_path)
+            await self.add_title_tags(page)
+            await self.detect_upload_status(page)
+            if self.thumbnail_path:
+                await self.upload_thumbnail(page)
+            if self.publish_date != 0:
+                await self.set_schedule_time(page, self.publish_date)
+            await self.click_publish(page)
+            await context.storage_state(path=chrome_storage_state_path(self.account_file))
+        finally:
+            await _close_account_context(context, browser)
 
-        await self.choose_base_locator(page)
-
-        upload_button = self.locator_base.locator(
-            'button:has-text("Select video"):visible')
-        await upload_button.wait_for(state='visible')  # 确保按钮可见
-
-        async with page.expect_file_chooser() as fc_info:
-            await upload_button.click()
-        file_chooser = await fc_info.value
-        await file_chooser.set_files(self.file_path)
-
-        await self.add_title_tags(page)
-        # detact upload status
-        await self.detect_upload_status(page)
-        if self.thumbnail_path:
-            await self.upload_thumbnail(page)
-        if self.publish_date != 0:
-            await self.set_schedule_time(page, self.publish_date)
-
-        await self.click_publish(page)
-
-        await context.storage_state(
-            path=chrome_storage_state_path(self.account_file)
-        )
-        tiktok_logger.info('  [-] update cookie！')
-        await asyncio.sleep(2)  # close delay for look the video status
-        # close all
-        await _close_account_context(context, browser)
+    async def open_upload_page(self, page):
+        try:
+            await page.goto(TIKTOK_STUDIO_URL, wait_until="domcontentloaded", timeout=60000)
+        except PlaywrightTimeoutError:
+            # A slow resource must not abort an already usable upload form.
+            tiktok_logger.warning("TikTok 页面加载较慢，继续检查上传控件")
+        deadline = asyncio.get_running_loop().time() + 60000 / 1000
+        while asyncio.get_running_loop().time() < deadline:
+            if "/login" in page.url.lower():
+                raise RuntimeError("TikTok 登录态失效，请重新登录")
+            for frame in page.frames:
+                file_input = frame.locator('input[type="file"][accept*="video"]').first
+                if await file_input.count():
+                    self.locator_base = frame.locator("body")
+                    return file_input
+            await asyncio.sleep(0.25)
+        raise TimeoutError("TikTok 未出现视频上传控件，请检查页面是否有验证提示")
 
     async def add_title_tags(self, page):
 
-        editor_locator = self.locator_base.locator('div.public-DraftEditor-content')
-        await editor_locator.click()
-
-        await page.keyboard.press("End")
-
-        await page.keyboard.press("Control+A")
-
-        await page.keyboard.press("Delete")
-
-        await page.keyboard.press("End")
-
-        await page.wait_for_timeout(1000)  # 等待1秒
-
-        await page.keyboard.insert_text(self.caption)
-        await page.wait_for_timeout(1000)  # 等待1秒
-        await page.keyboard.press("End")
-
-        await page.keyboard.press("Enter")
+        editor_locator = self.locator_base.locator('div.public-DraftEditor-content[contenteditable="true"], [contenteditable="true"][role="textbox"]').first
+        await editor_locator.wait_for(state="visible", timeout=120000)
+        await editor_locator.fill(self.caption)
+        await editor_locator.press("End")
+        await editor_locator.press("Enter")
 
         # tag part
         for index, tag in enumerate(self.tags, start=1):
@@ -345,31 +326,29 @@ class TiktokVideo(object):
         await page.wait_for_timeout(1000)
 
     async def click_publish(self, page):
-        deadline = asyncio.get_running_loop().time() + 300
-        while asyncio.get_running_loop().time() < deadline:
-            try:
-                publish_button = self.locator_base.locator(
-                    'div.button-group > button:has-text("Post"), div.btn-post button'
-                ).first
-                await publish_button.wait_for(state="visible", timeout=10000)
-                if await publish_button.get_attribute("disabled") is None:
-                    await publish_button.click()
-                await page.wait_for_url("**/tiktokstudio/content**", timeout=5000)
-                tiktok_logger.success("  [-] video published success")
-                return
-            except Exception as e:
-                tiktok_logger.info(f"  [-] video publishing: {type(e).__name__}")
-                await asyncio.sleep(1)
-        raise TimeoutError("TikTok did not confirm publication within 5 minutes")
+        # Studio's first-use editor tour can cover the submit control.
+        notice = page.get_by_role("button", name=re.compile(r"^(知道了|Got it)$", re.I))
+        try:
+            await notice.click(timeout=3000)
+        except PlaywrightTimeoutError:
+            pass
+        publish_button = self.publish_button()
+        await publish_button.click(timeout=60000)
+        # Submit once; a slow confirmation must not trigger duplicate posts.
+        await page.wait_for_url("**/tiktokstudio/content**", timeout=300000)
+        tiktok_logger.success("  [-] video published success")
+
+    def publish_button(self):
+        return self.locator_base.get_by_role(
+            "button", name=re.compile(r"^(Post|Publish|发布|發佈)$", re.I)
+        ).first
 
     async def detect_upload_status(self, page):
         deadline = asyncio.get_running_loop().time() + 1800
         while asyncio.get_running_loop().time() < deadline:
             try:
-                publish_button = self.locator_base.locator(
-                    'div.button-group > button:has-text("Post"), div.btn-post > button'
-                ).first
-                if await publish_button.count() and await publish_button.get_attribute("disabled") is None:
+                publish_button = self.publish_button()
+                if await publish_button.count() and await publish_button.is_visible() and await publish_button.is_enabled():
                     tiktok_logger.info("  [-]video uploaded.")
                     return
                 else:
