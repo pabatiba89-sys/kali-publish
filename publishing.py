@@ -73,8 +73,8 @@ def publish_videos(payload: dict) -> None:
     if category == 0:
         category = None
     enable_timer = payload.get("sendnow", "now") == "schedule"
-    if enable_timer and not platform.get("supportsSchedule", True):
-        raise ValueError(f"{platform['name']} does not support scheduled publishing")
+    if not platform.get("supportsSchedule", True):
+        enable_timer = False
     arguments = [
         payload.get("title") or "",
         file_list,

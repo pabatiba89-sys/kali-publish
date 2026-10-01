@@ -17,7 +17,7 @@ Kali Publish 是本地运行的多平台视频发布后端，通过本机 Chrome
 | 9 | Facebook | 浏览器登录 | 是 | 否 |
 | 10 | 支付宝生活号 | 浏览器登录 | 是 | 否 |
 
-所有平台都通过 `/login` 添加账号，不再需要开发者 API 令牌。TikTok、YouTube、X、Instagram 和 Facebook 的首次登录使用完全普通的 Chrome 窗口和各自独立的资料目录，因此通过 Google 账号登录时不会进入“浏览器不安全”的重试页。后续发布仅复用对应专用登录态。Facebook 会发布到登录窗口中当前选中的身份；如果要发到主页，登录时先切换到对应主页身份。
+所有平台都通过 `/login` 添加账号，不再需要开发者 API 令牌。TikTok、YouTube、X、Instagram 和 Facebook 的首次登录使用完全普通的 Chrome 窗口和各自独立的资料目录，因此通过 Google 账号登录时不会进入“浏览器不安全”的重试页。登录完成时会将会话导出到本地独立文件，后续发布只复用导出会话，不再直接打开登录用的 Chrome 资料库。Facebook 会发布到登录窗口中当前选中的身份；如果要发到主页，登录时先切换到对应主页身份。
 
 视频号发布会按现有业务规则追加 `#喀理系统` 和 `@岳同学AI`，并在新版发布页可用时选择第二个内容标记项。
 
@@ -102,6 +102,8 @@ GET /login?type=7&id=brand-x
 返回 `browser_opened` 后，在弹出的 Chrome 窗口中登录，并保持窗口打开直到服务返回 `200`，此时账号才已保存。其他平台只需替换 `type`。TikTok、YouTube、X、Instagram 和 Facebook 会通过专用 Chrome 资料中必需的 Cookie 名称确认登录完成，不依赖可能被锁定或误判的浏览历史，也不读取 Cookie 内容。登录态保存在数据目录的 `cookiesFile/`，不会读取日常 Chrome 资料；删除账号时会一并删除对应登录态。
 
 X、Instagram、Facebook 和 TikTok 可传 `description` 或 `content`；YouTube 还可传 `description`、`thumbnailPath`、`playlist`、`visibility`；TikTok 可传 `thumbnailPath`；支付宝生活号可传 `description`、`thumbnailPath`、`collectionName`。封面文件需要先通过 `/upload` 上传，并传入返回的 `filepath`。
+
+对不支持原生定时的平台，即使请求携带 `sendnow=schedule`，后端也会自动改为立即发布，不再返回“不支持定时”错误。
 
 ## 数据与配置
 

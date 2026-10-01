@@ -46,14 +46,20 @@ class FakePage:
 
 class FakeChromium:
     def __init__(self):
-        self.persistent_profile = None
+        self.storage_state = None
 
     async def launch_persistent_context(self, user_data_dir, **_options):
-        self.persistent_profile = Path(user_data_dir)
-        return FakeContext({"auth_token"})
+        raise AssertionError("exported profile state must not reopen the login profile")
 
     async def launch(self, **_options):
-        raise AssertionError("profile directory must not use storage-state browser launch")
+        return self
+
+    async def new_context(self, storage_state):
+        self.storage_state = Path(storage_state)
+        return FakeContext({"auth_token"})
+
+    async def close(self):
+        return None
 
 
 class FakePlaywright:
@@ -131,14 +137,16 @@ class BrowserPublisherTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(observed[0][1].suffix, "")
             self.assertTrue(observed[0][1].is_dir())
 
-    async def test_web_cookie_auth_reuses_profile_directory(self):
+    async def test_web_cookie_auth_uses_exported_profile_state(self):
         with tempfile.TemporaryDirectory() as directory:
             profile = Path(directory) / "web-7-profile"
             profile.mkdir()
+            state = profile / "storage-state.json"
+            state.write_text("{}", encoding="utf-8")
             playwright = FakePlaywright()
 
             self.assertTrue(await _browser_cookie_auth(playwright, 7, profile))
-            self.assertEqual(playwright.chromium.persistent_profile, profile)
+            self.assertEqual(playwright.chromium.storage_state, state)
 
 
 if __name__ == "__main__":

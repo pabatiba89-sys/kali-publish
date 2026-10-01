@@ -11,8 +11,11 @@ from uploader.tk_uploader.tk_config import Tk_Locator
 from utils.base_social_media import set_init_script
 from utils.browser_runtime import (
     chrome_profile_has_cookies,
+    chrome_storage_state_path,
     chromium_launch_options,
+    reserve_loopback_port,
     resolve_chrome_executable,
+    save_chrome_storage_state,
 )
 from utils.log import tiktok_logger
 from conf import LOCAL_CHROME_HEADLESS
@@ -38,12 +41,13 @@ async def _open_account_context(playwright: Playwright, account_file, headless: 
     account_path = Path(account_file)
     options = chromium_launch_options(headless=headless, args=["--lang=en-GB"])
     if account_path.is_dir():
-        context = await playwright.chromium.launch_persistent_context(
-            user_data_dir=str(account_path), **options
-        )
-        return context, None
+        storage_state = chrome_storage_state_path(account_path)
+        if not storage_state.is_file():
+            raise FileNotFoundError(f"TikTok login state is missing: {storage_state}")
+    else:
+        storage_state = account_path
     browser = await playwright.chromium.launch(**options)
-    context = await browser.new_context(storage_state=account_path)
+    context = await browser.new_context(storage_state=storage_state)
     return context, browser
 
 
@@ -63,11 +67,14 @@ async def tiktok_cookie_gen(account_file) -> dict:
         pass
 
     chrome = resolve_chrome_executable()
+    debug_port = reserve_loopback_port()
     process = subprocess.Popen(
         [
             str(chrome),
             f"--user-data-dir={profile_dir}",
             "--profile-directory=Default",
+            f"--remote-debugging-port={debug_port}",
+            "--remote-debugging-address=127.0.0.1",
             "--no-first-run",
             "--new-window",
             TIKTOK_LOGIN_URL,
@@ -83,13 +90,19 @@ async def tiktok_cookie_gen(account_file) -> dict:
             if chrome_profile_has_cookies(
                 profile_dir, ("tiktok.com",), TIKTOK_LOGIN_COOKIES
             ):
-                logged_in = True
                 await asyncio.sleep(2)
+                logged_in = await save_chrome_storage_state(
+                    debug_port, chrome_storage_state_path(profile_dir)
+                )
                 break
             if process.poll() is not None:
                 logged_in = chrome_profile_has_cookies(
                     profile_dir, ("tiktok.com",), TIKTOK_LOGIN_COOKIES
                 )
+                if logged_in:
+                    logged_in = await save_chrome_storage_state(
+                        debug_port, chrome_storage_state_path(profile_dir)
+                    )
                 break
             await asyncio.sleep(1)
     finally:
@@ -270,8 +283,9 @@ class TiktokVideo(object):
 
         await self.click_publish(page)
 
-        if Path(self.account_file).is_file():
-            await context.storage_state(path=self.account_file)  # save legacy cookie file
+        await context.storage_state(
+            path=chrome_storage_state_path(self.account_file)
+        )
         tiktok_logger.info('  [-] update cookie！')
         await asyncio.sleep(2)  # close delay for look the video status
         # close all

@@ -6,6 +6,7 @@
 - X、Instagram 和 Facebook 改为本机 Chrome 登录与网页发布，移除官方 API 凭据导入。
 - X、Instagram 和 Facebook 的首次登录改用普通 Chrome 独立资料目录，修复使用 Google 账号登录时反复进入“重试”页。
 - TikTok 首次登录也改用普通 Chrome 独立资料目录，修复选择 Google 登录时提示浏览器不受支持的问题，同时保留历史 JSON 登录态兼容。
+- TikTok、YouTube、X、Instagram 和 Facebook 在普通 Chrome 登录完成时导出独立会话文件，修复 macOS 系统钥匙串与自动化浏览器模拟钥匙串不兼容、导致发布时登录态消失的问题。
 - YouTube、X、Instagram 和 Facebook 改用必需 Cookie 名称确认登录完成，修复 Chrome 历史被锁定时账号不保存，以及仅访问首页就被误判为已登录的问题。
 - X、Instagram、Facebook 和 TikTok 发布补齐正文字段传递。
 - 新增支付宝生活号浏览器登录、视频发布、封面和合集选择。
@@ -13,6 +14,7 @@
 - YouTube 发布接口补齐简介、封面、播放列表与可见性参数。
 - TikTok 和 YouTube 新增本机浏览器登录入口，并修复真实发布时的参数错误。
 - YouTube 首次登录改用普通 Chrome 独立资料目录，避免 Google 拒绝自动化浏览器登录。
+- 不支持原生定时的平台收到定时请求时自动改为立即发布，不再报错。
 - 同步视频号最新发布规则：追加业务话题和账号提及，并处理新版内容标记选项。
 
 # Kali Publish v1.0.0

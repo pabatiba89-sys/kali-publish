@@ -51,7 +51,14 @@ class PublishingDispatchTests(unittest.TestCase):
         arguments = publisher.call_args.args
         self.assertEqual(arguments[-3:], ("https://example.com/product", "product", "2026-09-15 10:00:00"))
 
-    def test_platform_without_native_schedule_is_rejected(self):
+    def test_platform_without_native_schedule_publishes_immediately(self):
+        publisher = Mock()
+        platform = {
+            "name": "X",
+            "publisher": publisher,
+            "login": True,
+            "supportsSchedule": False,
+        }
         payload = {
             "type": 7,
             "fileList": ["video.mp4"],
@@ -59,8 +66,9 @@ class PublishingDispatchTests(unittest.TestCase):
             "sendnow": "schedule",
             "endpublishTime": "2026-10-01 10:00:00",
         }
-        with self.assertRaisesRegex(ValueError, "does not support scheduled publishing"):
+        with patch.dict(publishing.PLATFORMS, {7: platform}):
             publishing.publish_videos(payload)
+        self.assertFalse(publisher.call_args.args[5])
 
     def test_youtube_metadata_is_forwarded(self):
         publisher = Mock()

@@ -24,8 +24,11 @@ from uploader.base_video import BaseVideoUploader
 from utils.base_social_media import set_init_script
 from utils.browser_runtime import (
     chrome_profile_has_cookies,
+    chrome_storage_state_path,
     chromium_launch_options,
+    reserve_loopback_port,
     resolve_chrome_executable,
+    save_chrome_storage_state,
 )
 from utils.log import youtube_logger
 
@@ -94,12 +97,13 @@ async def _open_account_context(playwright: Playwright, account_file, headless: 
     if YT_PROXY:
         options["proxy"] = {"server": YT_PROXY}
     if account_path.is_dir():
-        context = await playwright.chromium.launch_persistent_context(
-            user_data_dir=str(account_path), **options
-        )
-        return context, None
+        storage_state = chrome_storage_state_path(account_path)
+        if not storage_state.is_file():
+            raise FileNotFoundError(f"YouTube login state is missing: {storage_state}")
+    else:
+        storage_state = account_path
     browser = await playwright.chromium.launch(**options)
-    context = await browser.new_context(storage_state=account_path)
+    context = await browser.new_context(storage_state=storage_state)
     return context, browser
 
 
@@ -138,10 +142,13 @@ async def youtube_cookie_gen(account_file, headless: bool = False):
         pass
 
     chrome = resolve_chrome_executable()
+    debug_port = reserve_loopback_port()
     command = [
         str(chrome),
         f"--user-data-dir={profile_dir}",
         "--profile-directory=Default",
+        f"--remote-debugging-port={debug_port}",
+        "--remote-debugging-address=127.0.0.1",
         "--no-first-run",
         "--new-window",
     ]
@@ -166,8 +173,11 @@ async def youtube_cookie_gen(account_file, headless: bool = False):
                 ("youtube.com",),
                 {"LOGIN_INFO", "SAPISID"},
             ):
-                current_url = STUDIO_URL
                 await asyncio.sleep(2)  # 给 Chrome 时间把 cookie 和本地存储落盘
+                if await save_chrome_storage_state(
+                    debug_port, chrome_storage_state_path(profile_dir)
+                ):
+                    current_url = STUDIO_URL
                 break
             if process.poll() is not None:
                 if chrome_profile_has_cookies(
@@ -175,7 +185,10 @@ async def youtube_cookie_gen(account_file, headless: bool = False):
                     ("youtube.com",),
                     {"LOGIN_INFO", "SAPISID"},
                 ):
-                    current_url = STUDIO_URL
+                    if await save_chrome_storage_state(
+                        debug_port, chrome_storage_state_path(profile_dir)
+                    ):
+                        current_url = STUDIO_URL
                 break
             await asyncio.sleep(1)
     finally:
@@ -420,11 +433,12 @@ class YouTubeVideo(BaseVideoUploader):
             youtube_logger.success(_msg("🥳", f"发布完成（{self.visibility}）{(' ' + video_url) if video_url else ''}"))
 
         # 刷新 cookie
-        if Path(self.account_file).is_file():
-            try:
-                await context.storage_state(path=self.account_file)
-            except Exception:
-                pass
+        try:
+            await context.storage_state(
+                path=chrome_storage_state_path(self.account_file)
+            )
+        except Exception:
+            pass
         await page.wait_for_timeout(2000)
         await _close_account_context(context, browser)
 

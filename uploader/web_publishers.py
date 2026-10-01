@@ -12,8 +12,11 @@ from conf import BASE_DIR, LOCAL_CHROME_HEADLESS
 from utils.base_social_media import set_init_script
 from utils.browser_runtime import (
     chrome_profile_has_cookies,
+    chrome_storage_state_path,
     chromium_launch_options,
+    reserve_loopback_port,
     resolve_chrome_executable,
+    save_chrome_storage_state,
 )
 from utils.log import facebook_logger, instagram_logger, x_logger
 
@@ -101,11 +104,14 @@ async def browser_cookie_gen(platform_type: int, account_file) -> dict:
         pass
     logger = config["logger"]
     chrome = resolve_chrome_executable()
+    debug_port = reserve_loopback_port()
     process = subprocess.Popen(
         [
             str(chrome),
             f"--user-data-dir={profile_dir}",
             "--profile-directory=Default",
+            f"--remote-debugging-port={debug_port}",
+            "--remote-debugging-address=127.0.0.1",
             "--no-first-run",
             "--new-window",
             config["login_url"],
@@ -121,14 +127,20 @@ async def browser_cookie_gen(platform_type: int, account_file) -> dict:
             if chrome_profile_has_cookies(
                 profile_dir, config["cookie_domains"], config["cookies"]
             ):
-                current_url = config["home_url"]
                 await asyncio.sleep(2)
+                if await save_chrome_storage_state(
+                    debug_port, chrome_storage_state_path(profile_dir)
+                ):
+                    current_url = config["home_url"]
                 break
             if process.poll() is not None:
                 if chrome_profile_has_cookies(
                     profile_dir, config["cookie_domains"], config["cookies"]
                 ):
-                    current_url = config["home_url"]
+                    if await save_chrome_storage_state(
+                        debug_port, chrome_storage_state_path(profile_dir)
+                    ):
+                        current_url = config["home_url"]
                 break
             await asyncio.sleep(1)
     finally:
@@ -147,12 +159,13 @@ async def _open_account_context(playwright: Playwright, account_file, headless: 
     account_path = Path(account_file)
     options = chromium_launch_options(headless=headless)
     if account_path.is_dir():
-        context = await playwright.chromium.launch_persistent_context(
-            user_data_dir=str(account_path), **options
-        )
-        return context, None
+        storage_state = chrome_storage_state_path(account_path)
+        if not storage_state.is_file():
+            raise FileNotFoundError(f"Browser login state is missing: {storage_state}")
+    else:
+        storage_state = account_path
     browser = await playwright.chromium.launch(**options)
-    context = await browser.new_context(storage_state=account_path)
+    context = await browser.new_context(storage_state=storage_state)
     return context, browser
 
 
@@ -280,7 +293,9 @@ class BrowserVideoPublisher:
         page.set_default_timeout(60000)
         try:
             await self.publish(page)
-            await context.storage_state(path=self.account_file)
+            await context.storage_state(
+                path=chrome_storage_state_path(self.account_file)
+            )
         except Exception:
             failure_dir = Path(BASE_DIR) / "logs" / "failures"
             failure_dir.mkdir(parents=True, exist_ok=True)
