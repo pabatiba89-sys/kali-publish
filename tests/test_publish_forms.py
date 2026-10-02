@@ -1,12 +1,12 @@
 """Exercise upload controls against real DOMs, including localized pages."""
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from uploader.tk_uploader.main import TiktokVideo
-from uploader.web_publishers import InstagramWebVideo
+from uploader.web_publishers import InstagramWebVideo, XWebVideo, FacebookWebVideo, _wait_enabled
 from uploader.youtube_uploader.main import YouTubeVideo
 from uploader.xiaohongshu_uploader.main import XiaoHongShuVideo
 from utils.browser_runtime import chromium_launch_options
@@ -21,6 +21,62 @@ class PublishFormTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.browser.close()
         await self.runtime.stop()
+
+    async def test_publish_button_skips_hidden_and_disabled_duplicates(self):
+        await self.page.set_content('''<button data-testid="tweetButton" hidden>Post</button>
+            <button data-testid="tweetButton" disabled>Post</button>
+            <button data-testid="tweetButton" id="active">Post</button>''')
+        button = await _wait_enabled(self.page.locator('[data-testid="tweetButton"]'), timeout=400)
+        self.assertEqual(await button.get_attribute('id'), 'active')
+
+    async def test_instagram_processing_waits_at_least_fifteen_minutes(self):
+        uploader = InstagramWebVideo('Title', 'unused', [], 'unused')
+        file_input = SimpleNamespace(set_input_files=AsyncMock())
+        success = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        with (
+            patch.object(uploader, 'open_composer', AsyncMock(return_value=file_input)),
+            patch.object(uploader, 'prepare_caption', AsyncMock()),
+            patch('uploader.web_publishers._click_text', AsyncMock()) as click,
+            patch('uploader.web_publishers._first_visible', AsyncMock(return_value=success)) as wait,
+        ):
+            await uploader.publish(self.page)
+        self.assertGreaterEqual(wait.call_args.kwargs['timeout'], 900000)
+        self.assertGreaterEqual(click.call_args.kwargs['timeout'], 900000)
+        self.assertGreaterEqual(file_input.set_input_files.call_args.kwargs['timeout'], 900000)
+
+    async def test_x_posts_from_active_composer_once_not_background(self):
+        html = '''<div data-testid="tweetTextarea_0" contenteditable="true" hidden></div>
+            <button data-testid="tweetButtonInline" onclick="window.background++">Post</button>
+            <div role="dialog"><div data-testid="tweetTextarea_0" contenteditable="true"></div>
+              <input type="file" data-testid="fileInput">
+              <button data-testid="tweetButton" hidden>Post</button>
+              <button data-testid="tweetButton" onclick="window.posts++;this.parentElement.remove()">Post</button>
+            </div><script>window.posts=0;window.background=0</script>'''
+        await self.page.route('**/*', lambda route: route.fulfill(body=html, content_type='text/html; charset=utf-8'))
+        uploader = XWebVideo('Title', 'unused', [], 'unused')
+        uploader.file_path = {'name': 'test.mp4', 'mimeType': 'video/mp4', 'buffer': b'test'}
+        import asyncio
+        await asyncio.wait_for(uploader.publish(self.page), timeout=5)
+        self.assertEqual(await self.page.evaluate('[window.posts,window.background]'), [1, 0])
+
+    async def test_facebook_localized_next_page_and_share(self):
+        html = '''<input type="file"><button hidden>下一页</button>
+            <button id="next" onclick="this.remove();document.querySelector('#caption').hidden=false;
+              document.querySelector('#share').hidden=false">下一页</button>
+            <div id="caption" contenteditable="true" role="textbox" hidden></div>
+            <button id="share" hidden onclick="document.querySelector('#caption').remove();
+              this.remove();document.body.insertAdjacentHTML('beforeend','<p>Reel published</p>')">分享</button>'''
+        await self.page.route('**/*', lambda route: route.fulfill(body=html, content_type='text/html; charset=utf-8'))
+        uploader = FacebookWebVideo('Title', 'unused', [], 'unused')
+        uploader.file_path = {'name': 'test.mp4', 'mimeType': 'video/mp4', 'buffer': b'test'}
+        # Keep a broken selector from taking minutes in a regression test.
+        import uploader.web_publishers as module
+        real_click = module._click_text
+        async def fast_click(page, labels, timeout=30000):
+            return await real_click(page, labels, timeout=500)
+        with patch.object(module, '_click_text', fast_click):
+            await uploader.publish(self.page)
+        self.assertTrue(await self.page.get_by_text('Reel published').is_visible())
 
     async def test_instagram_opens_composer_and_ignores_avatar_input(self):
         html = '''<button onclick="this.remove()">以后再说</button>

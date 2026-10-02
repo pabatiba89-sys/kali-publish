@@ -21,6 +21,7 @@ from utils.browser_runtime import (
 )
 from utils.log import facebook_logger, instagram_logger, x_logger
 
+PROCESSING_TIMEOUT_MS = 15 * 60 * 1000
 
 WEB_PLATFORMS = {
     7: {
@@ -212,8 +213,9 @@ async def _first_visible(locators: list[Locator], timeout: int = 30000) -> Locat
     while asyncio.get_running_loop().time() < deadline:
         for locator in locators:
             try:
-                if await locator.count() and await locator.first.is_visible():
-                    return locator.first
+                for candidate in await locator.all():
+                    if await candidate.is_visible():
+                        return candidate
             except Exception:
                 continue
         await asyncio.sleep(0.25)
@@ -231,18 +233,17 @@ async def _click_text(page: Page, labels: list[str], timeout: int = 30000) -> No
             ]
         )
     locator = await _first_visible(locators, timeout=timeout)
-    await locator.click()
+    await locator.click(timeout=timeout)
 
 
 async def _wait_enabled(locator: Locator, timeout: int = 180000) -> Locator:
     deadline = asyncio.get_running_loop().time() + timeout / 1000
     while asyncio.get_running_loop().time() < deadline:
         try:
-            if await locator.count() and await locator.first.is_visible():
-                disabled = await locator.first.get_attribute("disabled")
-                aria_disabled = await locator.first.get_attribute("aria-disabled")
-                if disabled is None and aria_disabled != "true":
-                    return locator.first
+            for candidate in await locator.all():
+                if await candidate.is_visible() and await candidate.is_enabled():
+                    if await candidate.get_attribute("aria-disabled") != "true":
+                        return candidate
         except Exception:
             pass
         await asyncio.sleep(1)
@@ -291,6 +292,7 @@ class BrowserVideoPublisher:
         )
         context = await set_init_script(context)
         page = await context.new_page()
+        await page.set_viewport_size({"width": 1440, "height": 1000})
         page.set_default_timeout(60000)
         try:
             await self.publish(page)
@@ -322,22 +324,29 @@ class XWebVideo(BrowserVideoPublisher):
 
     async def publish(self, page: Page) -> None:
         await page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=120000)
+        # Prefer the modal over the still-mounted home timeline composer.
+        dialog = page.get_by_role("dialog").filter(
+            has=page.locator('[data-testid="tweetTextarea_0"]')
+        ).locator('visible=true').first
         editor = await _first_visible(
             [
+                dialog.locator('[data-testid="tweetTextarea_0"]'),
                 page.locator('[data-testid="tweetTextarea_0"]'),
                 page.locator('[role="textbox"][contenteditable="true"]'),
             ]
         )
         await editor.fill(self.caption[:280])
-        file_input = page.locator('input[data-testid="fileInput"], input[type="file"]').first
+        # The home timeline can keep another editor/Post button behind the modal.
+        composer = dialog if await dialog.is_visible() else page
+        file_input = composer.locator('input[data-testid="fileInput"], input[type="file"]').first
         await file_input.wait_for(state="attached", timeout=30000)
-        await file_input.set_input_files(self.file_path)
-        button = page.locator(
+        await file_input.set_input_files(self.file_path, timeout=PROCESSING_TIMEOUT_MS)
+        button = composer.locator(
             '[data-testid="tweetButton"], [data-testid="tweetButtonInline"]'
         )
-        await (await _wait_enabled(button, timeout=600000)).click()
+        await (await _wait_enabled(button, timeout=PROCESSING_TIMEOUT_MS)).click(timeout=PROCESSING_TIMEOUT_MS)
         try:
-            await editor.wait_for(state="hidden", timeout=60000)
+            await editor.wait_for(state="hidden", timeout=PROCESSING_TIMEOUT_MS)
         except Exception:
             raise RuntimeError("X 发布后编辑器仍未关闭，未确认发布成功")
         x_logger.success("X 视频发布成功")
@@ -378,8 +387,8 @@ class InstagramWebVideo(BrowserVideoPublisher):
             await onboarding.get_by_role("button", name=re.compile(r"^(确定|OK|Got it)$", re.I)).click(timeout=5000)
         except PlaywrightTimeoutError:
             pass
-        await _click_text(page, ["Next", "Continue", "下一步", "继续"], timeout=120000)
-        await _click_text(page, ["Next", "Continue", "下一步", "继续"], timeout=60000)
+        await _click_text(page, ["Next", "Continue", "下一步", "继续"], timeout=PROCESSING_TIMEOUT_MS)
+        await _click_text(page, ["Next", "Continue", "下一步", "继续"], timeout=PROCESSING_TIMEOUT_MS)
         caption = await _first_visible(
             [
                 page.locator('[role="dialog"] [contenteditable="true"][role="textbox"]'),
@@ -387,16 +396,16 @@ class InstagramWebVideo(BrowserVideoPublisher):
                 page.locator('textarea[placeholder*="caption" i]'),
                 page.locator('textarea'),
             ],
-            timeout=60000,
+            timeout=PROCESSING_TIMEOUT_MS,
         )
         await caption.fill(self.caption[:2200])
         return caption
 
     async def publish(self, page: Page) -> None:
         file_input = await self.open_composer(page)
-        await file_input.set_input_files(self.file_path)
+        await file_input.set_input_files(self.file_path, timeout=PROCESSING_TIMEOUT_MS)
         await self.prepare_caption(page)
-        await _click_text(page, ["Share", "分享", "发布"], timeout=60000)
+        await _click_text(page, ["Share", "分享", "发布"], timeout=PROCESSING_TIMEOUT_MS)
         success = await _first_visible(
             [
                 page.get_by_text("Your reel has been shared", exact=False),
@@ -404,7 +413,7 @@ class InstagramWebVideo(BrowserVideoPublisher):
                 page.get_by_text("已分享", exact=False),
                 page.get_by_text("已发布", exact=False),
             ],
-            timeout=180000,
+            timeout=PROCESSING_TIMEOUT_MS,
         )
         if not await success.is_visible():
             raise RuntimeError("Instagram 未返回发布成功提示")
@@ -423,10 +432,11 @@ class FacebookWebVideo(BrowserVideoPublisher):
         )
         file_input = page.locator('input[type="file"]').first
         await file_input.wait_for(state="attached", timeout=30000)
-        await file_input.set_input_files(self.file_path)
-        await _click_text(page, ["Next", "下一步"], timeout=120000)
+        await file_input.set_input_files(self.file_path, timeout=PROCESSING_TIMEOUT_MS)
+        next_labels = ["Next", "下一步", "下一页", "下一頁"]
+        await _click_text(page, next_labels, timeout=PROCESSING_TIMEOUT_MS)
         try:
-            await _click_text(page, ["Next", "下一步"], timeout=30000)
+            await _click_text(page, next_labels, timeout=30000)
         except TimeoutError:
             pass
         description = await _first_visible(
@@ -438,8 +448,8 @@ class FacebookWebVideo(BrowserVideoPublisher):
             timeout=60000,
         )
         await description.fill(self.caption[:5000])
-        await _click_text(page, ["Publish", "发布"], timeout=60000)
-        deadline = asyncio.get_running_loop().time() + 180
+        await _click_text(page, ["Publish", "Post", "Share", "发布", "發佈", "分享"], timeout=PROCESSING_TIMEOUT_MS)
+        deadline = asyncio.get_running_loop().time() + PROCESSING_TIMEOUT_MS / 1000
         while asyncio.get_running_loop().time() < deadline:
             if "/reels/create" not in page.url or not await description.is_visible():
                 break
