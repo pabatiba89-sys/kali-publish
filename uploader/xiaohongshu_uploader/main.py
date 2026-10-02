@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 
-from playwright.async_api import Playwright, async_playwright, Page
+from playwright.async_api import Playwright, async_playwright, Page, TimeoutError as PlaywrightTimeoutError
 import os
 import asyncio
 
-from conf import LOCAL_CHROME_PATH
+from conf import BASE_DIR, LOCAL_CHROME_PATH
 from utils.base_social_media import set_init_script
 from utils.browser_runtime import chromium_launch_options
 from utils.log import xiaohongshu_logger
@@ -105,6 +105,70 @@ class XiaoHongShuVideo(object):
         xiaohongshu_logger.info('视频出错了，重新上传中')
         await page.locator('div.progress-div [class^="upload-btn-input"]').set_input_files(self.file_path)
 
+    async def wait_video_ready(self, page, timeout=600000):
+        # The file input may be hidden after upload; wait for the actual ready marker.
+        await page.locator('.video-plugin-title-action').filter(
+            has_text='重新上传'
+        ).first.wait_for(state='visible', timeout=timeout)
+
+    async def submit_and_confirm(self, page, timeout=60000):
+        editor = page.locator('.ProseMirror').first
+        if await editor.count():
+            await editor.press('Tab')  # Leave the topic suggestion dropdown.
+        if await page.locator('xhs-publish-btn').count():
+            await self.click_shadow_publish(page, timeout)
+        else:
+            await page.get_by_text('发布', exact=True).locator('visible=true').first.click(timeout=timeout)
+        try:
+            await page.wait_for_url('**/publish/success**', timeout=timeout)
+        except PlaywrightTimeoutError as exc:
+            raise RuntimeError('小红书已点击发布，但未确认成功；请检查页面提示，不要重复提交') from exc
+
+    async def click_shadow_publish(self, page, timeout):
+        # The new footer keeps its buttons in a closed shadow root. Read that
+        # component via CDP, respect its real disabled state, then use a normal
+        # pointer click on the publish button (never dispatch a synthetic submit).
+        def attributes(node):
+            items = node.get('attributes', [])
+            return dict(zip(items[::2], items[1::2]))
+
+        def nodes(node):
+            yield node
+            for child in node.get('children', []) + node.get('shadowRoots', []):
+                yield from nodes(child)
+
+        cdp = await page.context.new_cdp_session(page)
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        try:
+            while asyncio.get_running_loop().time() < deadline:
+                root = await cdp.send('DOM.getDocument')
+                host = await cdp.send('DOM.querySelector', {
+                    'nodeId': root['root']['nodeId'], 'selector': 'xhs-publish-btn',
+                })
+                if host['nodeId']:
+                    tree = (await cdp.send('DOM.describeNode', {
+                        'nodeId': host['nodeId'], 'depth': -1, 'pierce': True,
+                    }))['node']
+                    label = attributes(tree).get('submit-text', '发布')
+                    for button in nodes(tree):
+                        if button.get('nodeName') != 'BUTTON':
+                            continue
+                        text = ''.join(n.get('nodeValue', '') for n in nodes(button)).strip()
+                        attrs = attributes(button)
+                        if text != label or 'disabled' in attrs or attrs.get('aria-disabled') == 'true' or attrs.get('aria-busy') == 'true':
+                            continue
+                        target = {'backendNodeId': button['backendNodeId']}
+                        await cdp.send('DOM.scrollIntoViewIfNeeded', target)
+                        box = (await cdp.send('DOM.getBoxModel', target))['model']
+                        if box['width'] > 0 and box['height'] > 0:
+                            quad = box['border']
+                            await page.mouse.click(sum(quad[::2]) / 4, sum(quad[1::2]) / 4)
+                            return
+                await asyncio.sleep(0.25)
+        finally:
+            await cdp.detach()
+        raise TimeoutError('小红书发布按钮不可用，请检查上传处理进度、封面或必填提示')
+
     async def upload(self, playwright: Playwright) -> None:
         # 使用 Chromium 浏览器启动一个浏览器实例
         browser = await playwright.chromium.launch(**chromium_launch_options(headless=False))
@@ -126,33 +190,8 @@ class XiaoHongShuVideo(object):
         # 点击 "上传视频" 按钮
         await page.locator("div[class^='upload-content'] input[class='upload-input']").set_input_files(self.file_path)
 
-        # 等待页面跳转到指定的 URL 2025.01.08修改在原有基础上兼容两种页面
-        while True:
-            try:
-                # 等待upload-input元素出现
-                upload_input = await page.wait_for_selector('input.upload-input', timeout=60000)
-                # 获取下一个兄弟元素
-                #zhaodao chenggongbiaoshi
-                success_element = await page.query_selector_all('.video-plugin-title-action')
-
-                # 在preview-new元素中查找包含"上传成功"的stage元素
-                ##publish-container > div.publish-page-container > div.style-override-container.red-theme-override-container > div > div.publish-page-content > div.publish-page-content-media > div.publish-page-content-media-content.mt0 > div.video-plugin-title > span.video-plugin-title-action
-                #stage_elements = await preview_new.query_selector_all('div.stage')
-                upload_success = False
-                for stage in success_element:
-                    text_content = await page.evaluate('(element) => element.textContent', stage)
-                    if '重新上传' in text_content:
-                        upload_success = True
-                        break
-                if upload_success:
-                    xiaohongshu_logger.info("[+] 检测到上传成功标识!")
-                    break  # 成功检测到上传成功后跳出循环
-                else:
-                    print("  [-] 未找到上传成功标识，继续等待...")
-
-            except Exception as e:
-                print(f"  [-] 检测过程出错: {str(e)}，重新尝试...")
-                break
+        await self.wait_video_ready(page)
+        xiaohongshu_logger.info("[+] 检测到上传成功标识!")
         # 填充标题和话题
         # 检查是否存在包含输入框的元素
         # 这里为了避免页面变化，故使用相对位置定位：作品标题父级右侧第一个元素的input子元素
@@ -184,21 +223,16 @@ class XiaoHongShuVideo(object):
         if self.enableTimer:
             await self.set_schedule_time_xiaohongshu(page, self.publish_date)
 
-        # 判断视频是否发布成功
-        while True:
+        try:
+            await self.submit_and_confirm(page)
+        except Exception:
             try:
-                # 等待包含"定时发布"文本的button元素出现并点击
-                await page.locator('button:has-text("发布")').click()
-                await page.wait_for_url(
-                    "https://creator.xiaohongshu.com/publish/success?**",
-                    timeout=60000
-                )  # 如果自动跳转到作品页面，则代表发布成功
-                xiaohongshu_logger.success("  [-]视频发布成功")
-                break
-            except:
-                xiaohongshu_logger.info("  [-] 视频正在发布中...")
-                await page.screenshot(full_page=True)
-                await asyncio.sleep(0.5)
+                await page.screenshot(path=str(BASE_DIR / "logs/xiaohongshu-publish-failure.png"), full_page=True)
+            finally:
+                await context.close()
+                await browser.close()
+            raise
+        xiaohongshu_logger.success("  [-]视频发布成功")
 
         await context.storage_state(path=self.account_file)  # 保存cookie
         xiaohongshu_logger.success('  [-]cookie更新完毕！')

@@ -12,10 +12,12 @@ Login is interactive (Google account, no QR code): the browser opens, the user s
 the storage_state is saved. Reuse it afterwards for fully unattended uploads.
 """
 import asyncio
+import re
 import sqlite3
 import subprocess
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from patchright.async_api import Page, Playwright, async_playwright
 
@@ -292,7 +294,7 @@ async def _wait_upload_complete(page: Page, max_polls: int = 360) -> bool:
                 youtube_logger.info(_msg("⏳", f"上传中: {txt[:40]}"))
                 last = txt
         await page.wait_for_timeout(5000)
-    youtube_logger.warning(_msg("⚠️", "等上传超时(30min)，仍尝试发布"))
+    youtube_logger.warning(_msg("⚠️", "等上传超时(30min)，停止提交"))
     return False
 
 
@@ -310,6 +312,45 @@ class YouTubeVideo(BaseVideoUploader):
         self.visibility = visibility if visibility in VISIBILITY else "public"
         self.debug = debug
         self.headless = headless
+
+    async def publish_and_confirm(self, page: Page, timeout=180000) -> str:
+        # Studio exposes the video URL before submission, including /shorts/ links.
+        link = page.locator("a[href*='youtu.be/'], a[href*='watch?v='], a[href*='/shorts/']").first
+        await link.wait_for(state='attached', timeout=timeout)
+        video_url = await link.get_attribute('href') or ''
+        parsed = urlparse(video_url)
+        video_id = parse_qs(parsed.query).get('v', [''])[0] or parsed.path.rstrip('/').split('/')[-1]
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', video_id):
+            raise RuntimeError('YouTube 未找到本次上传的视频链接，未提交发布')
+        await page.locator('#done-button').click(timeout=timeout)
+        await self.confirm_publication(page, video_id, timeout)
+        return video_url
+
+    async def confirm_publication(self, page: Page, video_id: str, timeout=180000) -> None:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', video_id):
+            raise ValueError('invalid YouTube video id')
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        expected = {
+            'public': re.compile(r'^(公开|Public)$', re.I),
+            'unlisted': re.compile(r'^(不公开列出|不公开|Unlisted)$', re.I),
+            'private': re.compile(r'^(私享|私人|Private)$', re.I),
+        }[self.visibility]
+        while asyncio.get_running_loop().time() < deadline:
+            # Only dismiss a success/result dialog, never an arbitrary warning.
+            result = page.get_by_role('dialog').filter(
+                has_text=re.compile(r'视频已发布|视频已保存|Video published|Video saved', re.I)
+            )
+            close = result.get_by_role('button', name=re.compile(r'^(关闭|完成|Close|Done)$', re.I)).first
+            if await close.is_visible():
+                await close.click(timeout=5000)
+            row = page.locator('ytcp-video-row, [role="row"], tr').filter(
+                has=page.locator(f'a[href*="/video/{video_id}/"]')
+            )
+            status = row.get_by_text(expected).first
+            if await status.is_visible():
+                return
+            await asyncio.sleep(0.25)
+        raise TimeoutError(f'YouTube 未确认视频为 {self.visibility} 状态；请检查最后弹框或频道内容，勿重复提交')
 
     async def upload(self, playwright: Playwright) -> None:
         context, browser = await _open_account_context(
@@ -409,28 +450,20 @@ class YouTubeVideo(BaseVideoUploader):
 
         # 10) 可见性
         youtube_logger.info(_msg("🌐", f"设置可见性 = {self.visibility}"))
-        await _click_if_present(page, f"tp-yt-paper-radio-button[name='{VISIBILITY[self.visibility]}']", 10000)
+        visibility = page.locator(f"tp-yt-paper-radio-button[name='{VISIBILITY[self.visibility]}']")
+        await visibility.click(timeout=10000)
+        if await visibility.get_attribute('aria-checked') != 'true':
+            raise RuntimeError(f'YouTube 未选中 {self.visibility}，停止发布以免保存为错误公开范围')
 
         # 10.5) 关键：等上传真正传完再发布。浏览器上传靠窗口开着传，
         #       传到一半就点发布+关浏览器 = 上传被掐断卡在中途（如 76%）。
         youtube_logger.info(_msg("📤", "等待上传完成（传完才发布）…"))
-        await _wait_upload_complete(page)
+        if not await _wait_upload_complete(page):
+            raise TimeoutError('YouTube 上传未完成，未提交发布')
 
         # 11) 发布
-        await page.wait_for_timeout(1200)
-        if not await _click_if_present(page, "#done-button", 15000):
-            youtube_logger.warning(_msg("🤔", "未找到发布按钮，可能上传未到可发布进度；请在窗口里手动发布"))
-        else:
-            await page.wait_for_timeout(4000)
-            video_url = ""
-            try:
-                link = page.locator("a[href*='youtu.be'], a[href*='watch?v=']").first
-                if await link.count():
-                    video_url = await link.get_attribute("href") or ""
-            except Exception:
-                pass
-            await _click_if_present(page, "ytcp-button:has-text('Close'), ytcp-button:has-text('关闭'), #close-button", 8000)
-            youtube_logger.success(_msg("🥳", f"发布完成（{self.visibility}）{(' ' + video_url) if video_url else ''}"))
+        video_url = await self.publish_and_confirm(page)
+        youtube_logger.success(_msg("🥳", f"发布完成（{self.visibility}） {video_url}"))
 
         # 刷新 cookie
         try:
