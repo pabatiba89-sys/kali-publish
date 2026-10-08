@@ -296,7 +296,15 @@ class AlipayVideo:
         if not Path(self.file_path).is_file():
             raise FileNotFoundError(f"Video file does not exist: {self.file_path}")
         if not await _cookie_auth(playwright, self.account_file):
-            raise RuntimeError("支付宝生活号登录态失效，请重新登录")
+            alipay_logger.info("支付宝生活号登录态失效，打开登录页；扫码成功后将继续本次发布")
+            # Login must be visible even when unattended publishing is headless.
+            # The existing login flow saves the refreshed session at this path.
+            result = await alipay_cookie_gen(self.account_file, headless=False)
+            if not result.get("success"):
+                raise RuntimeError("支付宝生活号登录未完成或已超时，本次视频尚未发布")
+            if not await _cookie_auth(playwright, self.account_file):
+                raise RuntimeError("支付宝生活号登录后会话仍不可用，本次视频尚未发布")
+            alipay_logger.info("支付宝生活号重新登录成功，继续本次发布")
         browser = await playwright.chromium.launch(
             **chromium_launch_options(headless=self.headless)
         )
