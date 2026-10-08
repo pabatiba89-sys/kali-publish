@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from uploader.tk_uploader.main import TiktokVideo
+from uploader.alipay_uploader.main import AlipayVideo
 from uploader.web_publishers import InstagramWebVideo, XWebVideo, FacebookWebVideo, _wait_enabled
 from uploader.youtube_uploader.main import YouTubeVideo
 from uploader.xiaohongshu_uploader.main import XiaoHongShuVideo
@@ -21,6 +22,78 @@ class PublishFormTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.browser.close()
         await self.runtime.stop()
+
+    async def test_alipay_confirms_default_cover_without_image(self):
+        await self.page.set_content('''
+            <button onclick="window.posts++">确认发布</button>
+            <div class="antd5-modal" hidden><button>确认</button></div>
+            <button onclick="document.querySelector('#cover').hidden=false">上传封面</button>
+            <div id="cover" class="antd5-modal" role="dialog" hidden>
+              <div class="antd5-modal-body">默认视频帧</div>
+              <button onclick="window.covers++;this.parentElement.hidden=true">确 认</button></div>
+            <script>window.posts=0;window.covers=0</script>''')
+        uploader = AlipayVideo('Title', 'unused', [], 'unused')
+        await uploader.upload_thumbnail(self.page)
+        self.assertEqual(await self.page.evaluate('[window.covers,window.posts]'), [1, 0])
+
+    async def test_alipay_success_dialog_does_not_click_publish_another(self):
+        await self.page.set_content('''
+            <button onclick="document.querySelector('#result').hidden=false">确认发布</button>
+            <div id="result" class="antd5-modal" role="dialog" hidden><h2>发布成功</h2>
+              <button onclick="window.again++;this.parentElement.hidden=true">继续发布</button></div>
+            <script>window.again=0</script>''')
+        uploader = AlipayVideo('Title', 'unused', [], 'unused')
+        await uploader.submit(self.page, timeout=0.5)
+        self.assertEqual(await self.page.evaluate('window.again'), 0)
+
+    async def test_alipay_does_not_accept_hidden_success(self):
+        await self.page.set_content('<button>确认发布</button><h2 hidden>发布成功</h2>')
+        uploader = AlipayVideo('Title', 'unused', [], 'unused')
+        with self.assertRaisesRegex(RuntimeError, '未返回发布成功'):
+            await uploader.submit(self.page, timeout=0.3)
+
+    async def test_alipay_waits_for_default_cover_to_be_ready(self):
+        await self.page.set_content('''
+            <button onclick="document.querySelector('#cover').hidden=false;
+              setTimeout(()=>document.querySelector('#done').disabled=false,200)">上传封面</button>
+            <div id="cover" class="antd5-modal" role="dialog" hidden>
+              <button id="done" disabled onclick="window.covers++;this.parentElement.hidden=true">确定</button></div>
+            <script>window.covers=0</script>''')
+        uploader = AlipayVideo('Title', 'unused', [], 'unused')
+        await uploader.upload_thumbnail(self.page)
+        self.assertEqual(await self.page.evaluate('window.covers'), 1)
+
+    async def test_alipay_does_not_ignore_failed_cover_confirmation(self):
+        await self.page.set_content('''<button onclick="document.querySelector('#cover').hidden=false">上传封面</button>
+            <div id="cover" class="antd5-modal" role="dialog" hidden><button>取消</button></div>''')
+        uploader = AlipayVideo('Title', 'unused', [], 'unused')
+        with self.assertRaisesRegex(RuntimeError, '封面.*未确认'):
+            await uploader.upload_thumbnail(self.page, timeout=400)
+
+    async def test_alipay_requires_cover_dialog_to_close_after_confirming(self):
+        await self.page.set_content('''<button onclick="document.querySelector('#cover').hidden=false">上传封面</button>
+            <div id="cover" class="antd5-modal" role="dialog" hidden>
+              <button onclick="window.clicks++">确认</button></div><script>window.clicks=0</script>''')
+        uploader = AlipayVideo('Title', 'unused', [], 'unused')
+        with self.assertRaisesRegex(RuntimeError, '封面.*未确认'):
+            await uploader.upload_thumbnail(self.page, timeout=400)
+        self.assertEqual(await self.page.evaluate('window.clicks'), 1)
+
+    async def test_alipay_custom_cover_still_uploads_then_confirms(self):
+        import tempfile
+        await self.page.set_content('''
+            <button onclick="document.querySelector('#cover').hidden=false">上传封面</button>
+            <div id="cover" class="antd5-modal" role="dialog" hidden>
+              <div class="antd5-modal-body"><button>上传封面</button><button>上传图片</button>
+                <input type="file" accept="image/png"></div>
+              <button onclick="window.files=document.querySelector('input').files.length;
+                this.parentElement.hidden=true">完 成</button></div>''')
+        with tempfile.NamedTemporaryFile(suffix='.png') as cover:
+            cover.write(b'test image fixture')
+            cover.flush()
+            uploader = AlipayVideo('Title', 'unused', [], 'unused', thumbnail_path=cover.name)
+            await uploader.upload_thumbnail(self.page)
+        self.assertEqual(await self.page.evaluate('window.files'), 1)
 
     async def test_publish_button_skips_hidden_and_disabled_duplicates(self):
         await self.page.set_content('''<button data-testid="tweetButton" hidden>Post</button>

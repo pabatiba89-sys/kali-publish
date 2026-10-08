@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path
 
@@ -198,37 +199,38 @@ class AlipayVideo:
             radio = ai_label.locator('input[type="radio"]').first
             await radio.check()
 
-    async def upload_thumbnail(self, page: Page) -> None:
-        if not self.thumbnail_path:
-            return
-        if not Path(self.thumbnail_path).is_file():
+    async def upload_thumbnail(self, page: Page, timeout: int = 180000) -> None:
+        if self.thumbnail_path and not Path(self.thumbnail_path).is_file():
             raise FileNotFoundError(f"Thumbnail does not exist: {self.thumbnail_path}")
         try:
-            cover = page.get_by_text("上传封面", exact=True).first
-            await cover.scroll_into_view_if_needed()
-            await cover.click(timeout=10000)
-            await page.wait_for_timeout(1500)
-            modal = page.locator(".antd5-modal-body").last
-            inner = modal.get_by_text("上传封面", exact=True).first
-            if await inner.count():
-                await inner.click(timeout=8000)
-                await page.wait_for_timeout(1000)
-            upload = modal.get_by_role("button", name="上传图片").first
-            await upload.click(timeout=10000)
-            image_input = page.locator(
-                'input[type="file"][accept*="jpg"], '
-                'input[type="file"][accept*="png"], '
-                'input[type="file"][accept*="image"]'
+            cover = page.get_by_text("上传封面", exact=True).locator("visible=true").first
+            await cover.scroll_into_view_if_needed(timeout=timeout)
+            await cover.click(timeout=timeout)
+            # Even without a custom image, the default video frame must be
+            # accepted. Include the footer, not just the modal body.
+            modal = page.locator('.antd5-modal:visible, [role="dialog"]:visible').last
+            await modal.wait_for(state="visible", timeout=timeout)
+            if self.thumbnail_path:
+                inner = modal.get_by_text("上传封面", exact=True).first
+                if await inner.is_visible():
+                    await inner.click(timeout=timeout)
+                upload = modal.get_by_role("button", name="上传图片", exact=True).first
+                await upload.click(timeout=timeout)
+                image_input = modal.locator(
+                    'input[type="file"][accept*="jpg"], '
+                    'input[type="file"][accept*="png"], '
+                    'input[type="file"][accept*="image"]'
+                ).first
+                await image_input.wait_for(state="attached", timeout=timeout)
+                await image_input.set_input_files(self.thumbnail_path, timeout=timeout)
+            done = modal.get_by_role(
+                "button", name=re.compile(r"^(确\s*认|确\s*定|完\s*成)$")
             ).first
-            await image_input.wait_for(state="attached", timeout=10000)
-            await image_input.set_input_files(self.thumbnail_path)
-            done = page.get_by_role("button", name="完 成").first
-            if not await done.count():
-                done = page.get_by_role("button", name="完成").first
-            await done.click(timeout=15000)
-            alipay_logger.success("支付宝生活号封面已上传")
+            await done.click(timeout=timeout)
+            await modal.wait_for(state="hidden", timeout=timeout)
+            alipay_logger.success("支付宝生活号封面已确认")
         except Exception as exc:
-            alipay_logger.warning(f"支付宝生活号封面上传失败，继续发布: {exc}")
+            raise RuntimeError("支付宝生活号封面未确认，已停止发布") from exc
 
     async def apply_collection(self, page: Page) -> None:
         if not self.collection_name:
@@ -258,27 +260,36 @@ class AlipayVideo:
             await asyncio.sleep(2)
         raise TimeoutError("等待支付宝视频上传或转码超时")
 
-    async def submit(self, page: Page) -> None:
+    async def submit(self, page: Page, timeout: float = 120) -> None:
         button = page.get_by_role("button", name="确认发布").first
         await button.click()
         started = time.monotonic()
-        while time.monotonic() - started < 120:
-            continue_button = page.locator(
-                '.antd5-modal-wrap button:has-text("继续发布"), '
-                '.antd5-modal button:has-text("继续发布")'
-            ).first
-            if await continue_button.count() and await continue_button.is_visible():
-                await continue_button.click()
+        continued = False
+        while time.monotonic() - started < timeout:
+            # Check completion BEFORE any "继续发布" control: on a result
+            # screen that control can mean publishing another video.
             if "/content-creation/posts" in page.url:
+                return
+            result = page.get_by_text(
+                re.compile(r"^(?:视频|作品)?(?:发布成功|提交成功)[！!。]?$"),
+            ).locator("visible=true")
+            if await result.count():
                 return
             success = page.locator(
                 '.antd5-message-notice-content:has-text("发布成功"), '
                 '.antd5-message-notice-content:has-text("提交成功"), '
                 '.antd5-message-notice-content:has-text("审核中")'
-            ).first
-            if await success.count() and await success.is_visible():
+            ).locator("visible=true")
+            if await success.count():
                 return
-            await asyncio.sleep(1)
+            continue_button = page.locator(
+                '.antd5-modal-wrap button:has-text("继续发布"), '
+                '.antd5-modal button:has-text("继续发布")'
+            ).locator("visible=true").first
+            if not continued and await continue_button.is_visible():
+                await continue_button.click()
+                continued = True
+            await asyncio.sleep(0.25)
         raise RuntimeError("支付宝生活号未返回发布成功信号")
 
     async def upload(self, playwright: Playwright) -> None:
@@ -289,18 +300,27 @@ class AlipayVideo:
         browser = await playwright.chromium.launch(
             **chromium_launch_options(headless=self.headless)
         )
-        context = await browser.new_context(storage_state=self.account_file)
-        page = await context.new_page()
+        context = None
         try:
+            context = await browser.new_context(storage_state=self.account_file)
+            page = await context.new_page()
             await self.open_upload_page(page)
             await self.fill_form(page)
             await self.wait_upload(page)
             await self.submit(page)
-            await context.storage_state(path=self.account_file)
             alipay_logger.success("支付宝生活号视频发布成功")
+            try:
+                await asyncio.wait_for(context.storage_state(path=self.account_file), timeout=10)
+            except Exception:
+                alipay_logger.warning("发布已成功，但登录态刷新未完成；继续关闭发布窗口")
         finally:
-            await context.close()
-            await browser.close()
+            try:
+                if context is not None:
+                    await asyncio.wait_for(context.close(), timeout=10)
+            except Exception:
+                alipay_logger.warning("发布会话关闭未完成，继续关闭本次发布浏览器")
+            finally:
+                await asyncio.wait_for(browser.close(), timeout=10)
 
     async def main(self):
         async with async_playwright() as playwright:
