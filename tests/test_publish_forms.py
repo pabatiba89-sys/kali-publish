@@ -1,5 +1,6 @@
 """Exercise upload controls against real DOMs, including localized pages."""
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -22,6 +23,74 @@ class PublishFormTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.browser.close()
         await self.runtime.stop()
+
+    async def test_alipay_expands_settings_and_confirms_schedule(self):
+        await self.page.set_content('''<button onclick="document.querySelector('#settings').hidden=false;this.hidden=true">展开</button>
+            <section id="settings" hidden><label><input type="radio" name="mode" checked>立即发布</label>
+              <label><input id="scheduled" type="radio" name="mode"
+                onchange="document.querySelector('#date').hidden=false">定时发布 </label>
+              <input id="date" hidden placeholder="请选择日期"
+                onfocus="document.querySelector('#picker').hidden=false">
+              <div id="picker" class="antd5-picker-dropdown" hidden>
+                <button onclick="window.saved=document.querySelector('#date').value;this.parentElement.hidden=true">确 定</button></div>
+              <button onclick="window.posts++">确认发布</button></section><script>window.posts=0</script>''')
+        scheduled = (datetime.now(timezone(timedelta(hours=8))) + timedelta(days=1)).replace(second=0, microsecond=0)
+        uploader = AlipayVideo('Title', 'unused', [], 'unused', publish_date=scheduled)
+        await uploader.apply_schedule(self.page, timeout=1000)
+        self.assertEqual(await self.page.evaluate('window.saved'), scheduled.strftime('%Y-%m-%d %H:%M'))
+        self.assertTrue(await self.page.locator('#scheduled').is_checked())
+        self.assertEqual(await self.page.evaluate('window.posts'), 0)
+
+    async def test_alipay_schedule_revert_prevents_submit(self):
+        await self.page.set_content('''<label><input type="radio" checked>定时发布</label>
+            <input placeholder="请选择日期" value="2000-01-01 00:00">
+            <button onclick="window.posts++">确认发布</button><script>window.posts=0</script>''')
+        scheduled = (datetime.now(timezone.utc) + timedelta(days=1)).replace(second=0, microsecond=0)
+        uploader = AlipayVideo('Title', 'unused', [], 'unused', publish_date=scheduled)
+        with self.assertRaisesRegex(RuntimeError, '定时'):
+            await uploader.submit(self.page, timeout=0.3)
+        self.assertEqual(await self.page.evaluate('window.posts'), 0)
+
+    async def test_alipay_immediate_radio_prevents_scheduled_submit(self):
+        scheduled = (datetime.now(timezone(timedelta(hours=8))) + timedelta(days=1)).replace(second=0, microsecond=0)
+        await self.page.set_content(f'''<label><input type="radio" name="mode" checked>立即发布</label>
+            <label><input type="radio" name="mode">定时发布</label>
+            <input placeholder="请选择日期" value="{scheduled:%Y-%m-%d %H:%M}">
+            <button onclick="window.posts++">确认发布</button><script>window.posts=0</script>''')
+        uploader = AlipayVideo('Title', 'unused', [], 'unused', publish_date=scheduled)
+        with self.assertRaisesRegex(RuntimeError, '定时'):
+            await uploader.submit(self.page, timeout=0.3)
+        self.assertEqual(await self.page.evaluate('window.posts'), 0)
+
+    async def test_alipay_calendar_must_accept_time(self):
+        await self.page.set_content('''<label><input type="radio" checked>定时发布</label>
+            <input placeholder="请选择日期" onfocus="document.querySelector('#picker').hidden=false">
+            <div id="picker" class="antd5-picker-dropdown" hidden>
+              <button onclick="document.querySelector('input[placeholder]').value='';this.parentElement.hidden=true">确定</button>
+            </div><button onclick="window.posts++">确认发布</button><script>window.posts=0</script>''')
+        scheduled = (datetime.now(timezone.utc) + timedelta(days=1)).replace(second=0, microsecond=0)
+        uploader = AlipayVideo('Title', 'unused', [], 'unused', publish_date=scheduled)
+        with self.assertRaisesRegex(RuntimeError, '定时'):
+            await uploader.apply_schedule(self.page, timeout=500)
+        self.assertEqual(await self.page.evaluate('window.posts'), 0)
+
+    async def test_alipay_valid_schedule_submits_once(self):
+        scheduled = (datetime.now(timezone(timedelta(hours=8))) + timedelta(days=1)).replace(second=0, microsecond=0)
+        await self.page.set_content(f'''<label><input type="radio" checked>定时发布</label>
+            <input placeholder="请选择日期" value="{scheduled:%Y-%m-%d %H:%M}">
+            <button onclick="window.posts++;document.querySelector('#success').hidden=false">确认发布</button>
+            <h2 id="success" hidden>提交成功</h2><script>window.posts=0</script>''')
+        uploader = AlipayVideo('Title', 'unused', [], 'unused', publish_date=scheduled)
+        await uploader.submit(self.page, timeout=1)
+        self.assertEqual(await self.page.evaluate('window.posts'), 1)
+
+    async def test_alipay_schedule_expiring_during_upload_prevents_submit(self):
+        await self.page.set_content('<button onclick="window.posts++">确认发布</button><script>window.posts=0</script>')
+        uploader = AlipayVideo('Title', 'unused', [], 'unused')
+        uploader.publish_date = datetime.now(timezone.utc) + timedelta(minutes=10)
+        with self.assertRaises(ValueError):
+            await uploader.submit(self.page, timeout=0.3)
+        self.assertEqual(await self.page.evaluate('window.posts'), 0)
 
     async def test_alipay_confirms_default_cover_without_image(self):
         await self.page.set_content('''

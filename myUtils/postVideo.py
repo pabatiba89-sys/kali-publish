@@ -9,7 +9,8 @@ from uploader.xiaohongshu_uploader.main import XiaoHongShuVideo
 from utils.constant import TencentZoneTypes
 from uploader.tk_uploader.main import TiktokVideo
 from uploader.youtube_uploader.main import YouTubeVideo
-from uploader.alipay_uploader.main import AlipayVideo
+from uploader.alipay_uploader.main import AlipayVideo, normalize_publish_date as normalize_alipay_publish_date
+from uploader.pdd_uploader.main import PDDVideo, normalize_publish_date as normalize_pdd_publish_date, validate_options as validate_pdd_options
 from uploader.web_publishers import (
     FacebookWebVideo,
     InstagramWebVideo,
@@ -204,6 +205,7 @@ def post_video_facebook(title, files, tags, account_file, category=None, enableT
 def post_video_alipay(title, files, tags, account_file, category=None, enableTimer=False,
                       videos_per_day=1, daily_times=None, start_days=0, endpublishTime='',
                       description='', thumbnail_path=None, collection_name=None):
+    publish_date = normalize_alipay_publish_date(endpublishTime) if enableTimer else None
     account_paths = [Path(COOKIES_FOLDER / file) for file in account_file]
     video_paths = [Path(VIDEO_FOLDER / file) for file in files]
     for video_path in video_paths:
@@ -216,8 +218,36 @@ def post_video_alipay(title, files, tags, account_file, category=None, enableTim
                 desc=description,
                 thumbnail_path=_optional_video_asset(thumbnail_path),
                 collection_name=collection_name,
+                publish_date=publish_date,
             )
             asyncio.run(publisher.main(), debug=False)
+
+
+def post_video_pdd(title, files, tags, account_file, category=None, enableTimer=False,
+                   videos_per_day=1, daily_times=None, start_days=0, endpublishTime='',
+                   *, description='', content_declaration=None, dry_run=True):
+    validate_pdd_options(content_declaration, dry_run)
+    publish_date = normalize_pdd_publish_date(endpublishTime) if enableTimer else None
+
+    def local_path(root, name):
+        if not isinstance(name, str) or name in ('', '.', '..') or '/' in name or '\\' in name:
+            raise ValueError("拼多多文件名不能包含目录")
+        path = Path(root) / name
+        if not path.is_file() or not path.resolve().is_relative_to(Path(root).resolve()):
+            raise ValueError("拼多多视频或已登录账号文件不存在，或位于数据目录之外")
+        return path
+
+    video_paths = [local_path(VIDEO_FOLDER, name) for name in files]
+    accounts = [local_path(COOKIES_FOLDER, name) for name in account_file]
+    results = []
+    for video in video_paths:
+        for account in accounts:
+            publisher = PDDVideo(title, video, tags, account, description=description,
+                                 content_declaration=content_declaration,
+                                 publish_date=publish_date, dry_run=dry_run)
+            result = asyncio.run(publisher.main(), debug=False)
+            results.append({"file": video.name, "account": account.name, **result})
+    return {"type": 11, "dryRun": dry_run, "results": results}
 
 
 def parse_publish_date(publish_date_str: str) -> datetime:

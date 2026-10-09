@@ -5,6 +5,38 @@ import publishing
 
 
 class PublishingDispatchTests(unittest.TestCase):
+    def test_pdd_defaults_to_dry_run_and_keeps_schedule(self):
+        publisher = Mock(return_value={'type': 11, 'dryRun': True})
+        with patch.dict(publishing.PLATFORMS, {11: {**publishing.PLATFORMS[11], 'publisher': publisher}}):
+            result = publishing.publish_videos({'type': 11, 'fileList': ['v.mp4'], 'accountList': ['pdd.json'],
+                'sendnow': 'schedule', 'endpublishTime': '2030-01-01 12:34:56',
+                'contentDeclaration': '含AI生成内容', 'description': 'description'})
+        self.assertTrue(publisher.call_args.args[5])
+        self.assertEqual(publisher.call_args.args[9], '2030-01-01 12:34:56')
+        self.assertEqual(publisher.call_args.kwargs, {'description': 'description',
+            'content_declaration': '含AI生成内容', 'dry_run': True})
+        self.assertEqual(result, {'type': 11, 'dryRun': True})
+
+    def test_pdd_rejects_unsupported_metadata_before_publishing(self):
+        publisher = Mock()
+        with patch.dict(publishing.PLATFORMS, {11: {**publishing.PLATFORMS[11], 'publisher': publisher}}):
+            for field in ('goodsId', 'taskId', 'thumbnailPath'):
+                with self.assertRaises(ValueError):
+                    publishing.publish_videos({'type': 11, 'fileList': ['v.mp4'],
+                        'accountList': ['pdd.json'], field: 'not-supported'})
+        publisher.assert_not_called()
+
+    def test_alipay_preserves_native_schedule_request(self):
+        self.assertTrue(publishing.PLATFORMS[10]['supportsSchedule'])
+        publisher = Mock()
+        platform = {**publishing.PLATFORMS[10], 'publisher': publisher}
+        with patch.dict(publishing.PLATFORMS, {10: platform}):
+            publishing.publish_videos({'type': 10, 'fileList': ['video.mp4'],
+                'accountList': ['account.json'], 'sendnow': 'schedule',
+                'endpublishTime': '2030-01-01 11:00:00'})
+        self.assertTrue(publisher.call_args.args[5])
+        self.assertEqual(publisher.call_args.args[9], '2030-01-01 11:00:00')
+
     def test_standard_platform_dispatch(self):
         publisher = Mock()
         platform = {"name": "小红书", "publisher": publisher, "login": True}
@@ -100,7 +132,7 @@ class PublishingDispatchTests(unittest.TestCase):
             "name": "支付宝生活号",
             "publisher": publisher,
             "login": True,
-            "supportsSchedule": False,
+            "supportsSchedule": True,
         }
         payload = {
             "type": 10,

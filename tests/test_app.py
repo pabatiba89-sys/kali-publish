@@ -31,14 +31,35 @@ class BackendApiTests(unittest.TestCase):
         platforms = self.client.get("/api/platforms").get_json()["data"]
         self.assertEqual(
             [item["type"] for item in platforms],
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
         )
         for platform_type in (7, 8, 9, 10):
             platform = next(item for item in platforms if item["type"] == platform_type)
             self.assertEqual(platform["accountMode"], "browser")
             self.assertTrue(platform["supportsLogin"])
             self.assertFalse(platform["supportsCredentialImport"])
-            self.assertFalse(platform["supportsSchedule"])
+            self.assertEqual(platform["supportsSchedule"], platform_type == 10)
+        personal = next(item for item in platforms if item['type'] == 11)
+        self.assertTrue(personal['experimental'])
+        self.assertTrue(personal['defaultDryRun'])
+        self.assertTrue(personal['supportsSchedule'])
+        self.assertIn('含AI生成内容', personal['contentDeclarations'])
+        self.assertIn(11, app_module.LOGIN_HANDLERS)
+
+    def test_pdd_dry_run_result_is_not_reported_as_published(self):
+        result = {'type': 11, 'dryRun': True, 'results': [{'status': 'prepared', 'published': False}]}
+        with patch.object(app_module, 'publish_videos', return_value=result):
+            response = self.client.post('/api/publish', json={'type': 11})
+            batch = self.client.post('/api/publish/batch', json=[{'type': 11}])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['data'], result)
+        self.assertEqual(batch.get_json()['data']['results'], [result])
+
+    def test_pdd_missing_declaration_fails_before_upload(self):
+        response = self.client.post('/api/publish', json={
+            'type': 11, 'fileList': ['unused.mp4'], 'accountList': ['unused.json']})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('contentDeclaration', response.get_json()['msg'])
 
     def test_official_api_import_endpoint_is_removed(self):
         response = self.client.post("/api/accounts/import", json={"type": 7})
@@ -212,7 +233,7 @@ class BackendApiTests(unittest.TestCase):
     def test_publish_validation_and_dispatch(self):
         self.assertEqual(self.client.post("/api/publish", json={}).status_code, 400)
         payload = {"type": 1, "fileList": ["a.mp4"], "accountList": ["a.json"]}
-        with patch.object(app_module, "publish_videos") as publisher:
+        with patch.object(app_module, "publish_videos", return_value=None) as publisher:
             self.assertEqual(self.client.post("/api/publish", json=payload).status_code, 200)
             publisher.assert_called_once_with(payload)
 

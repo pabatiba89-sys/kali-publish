@@ -22,6 +22,7 @@ from db import connect, initialize
 from myUtils.auth import check_cookie
 from myUtils.login import (
     alipay_cookie_gen,
+    pdd_cookie_gen,
     douyin_cookie_gen,
     facebook_cookie_gen,
     get_ks_cookie,
@@ -47,6 +48,7 @@ LOGIN_HANDLERS = {
     8: instagram_cookie_gen,
     9: facebook_cookie_gen,
     10: alipay_cookie_gen,
+    11: pdd_cookie_gen,
 }
 
 
@@ -145,6 +147,7 @@ def create_app(test_config=None):
                 "accountMode": value.get("accountMode", "browser"),
                 "supportsCredentialImport": False,
                 "supportsSchedule": value.get("supportsSchedule", True),
+                **{field: value[field] for field in ("experimental", "defaultDryRun", "contentDeclarations") if field in value},
             }
             for key, value in PLATFORMS.items()
         ]
@@ -365,13 +368,13 @@ def create_app(test_config=None):
         if not isinstance(payload, dict):
             return api_response(None, "JSON object required", 400)
         try:
-            publish_videos(payload)
+            result = publish_videos(payload)
         except (KeyError, TypeError, ValueError) as exc:
             return api_response(None, str(exc), 400)
         except Exception:
             app.logger.exception("Publish failed")
             return api_response(None, "publish failed", 500)
-        return api_response(None)
+        return api_response(result)
 
     @app.post("/postVideoBatch")
     @app.post("/api/publish/batch")
@@ -380,16 +383,20 @@ def create_app(test_config=None):
         if not isinstance(payloads, list):
             return api_response(None, "JSON array required", 400)
         try:
+            results = []
             for payload in payloads:
                 if not isinstance(payload, dict):
                     raise ValueError("every batch item must be an object")
-                publish_videos(payload)
+                results.append(publish_videos(payload))
         except (KeyError, TypeError, ValueError) as exc:
             return api_response(None, str(exc), 400)
         except Exception:
             app.logger.exception("Batch publish failed")
             return api_response(None, "batch publish failed", 500)
-        return api_response({"count": len(payloads)})
+        data = {"count": len(payloads)}
+        if any(result is not None for result in results):
+            data["results"] = results
+        return api_response(data)
 
     @app.errorhandler(413)
     def too_large(_error):

@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import Mock, patch
 
 from myUtils import postVideo
@@ -7,6 +7,21 @@ from uploader.tk_uploader.main import TiktokVideo
 
 
 class BrowserPublisherWiringTests(unittest.TestCase):
+    @patch.object(postVideo.asyncio, 'run')
+    @patch.object(postVideo, 'AlipayVideo')
+    def test_alipay_passes_schedule_to_uploader(self, video_class, run):
+        scheduled = (datetime.now(timezone.utc) + timedelta(days=1)).replace(second=0, microsecond=0)
+        postVideo.post_video_alipay('title', ['video.mp4'], [], ['account.json'],
+                                   enableTimer=True, endpublishTime=scheduled.isoformat())
+        self.assertEqual(video_class.call_args.kwargs['publish_date'].timestamp(), scheduled.timestamp())
+        run.assert_called_once()
+
+    @patch.object(postVideo.asyncio, 'run')
+    def test_alipay_schedule_without_time_does_not_publish(self, run):
+        with self.assertRaisesRegex(ValueError, '时间'):
+            postVideo.post_video_alipay('title', ['video.mp4'], [], ['account.json'], enableTimer=True)
+        run.assert_not_called()
+
     def test_publish_date_preserves_an_explicit_instant(self):
         parsed = postVideo.parse_publish_date("2026-10-01T02:00:00+00:00")
         self.assertEqual(parsed.timestamp(), datetime(2026, 10, 1, 2, tzinfo=timezone.utc).timestamp())

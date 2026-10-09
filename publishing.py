@@ -1,5 +1,6 @@
 from myUtils.postVideo import (
     post_video_alipay,
+    post_video_pdd,
     post_video_facebook,
     post_video_instagram,
     post_video_DouYin,
@@ -10,6 +11,7 @@ from myUtils.postVideo import (
     post_video_xhs,
     post_video_youtube,
 )
+from uploader.pdd_uploader.main import CONTENT_DECLARATIONS
 
 
 PLATFORMS = {
@@ -51,12 +53,18 @@ PLATFORMS = {
     },
     10: {
         "name": "支付宝生活号", "publisher": post_video_alipay, "login": True,
-        "accountMode": "browser", "supportsSchedule": False,
+        "accountMode": "browser", "supportsSchedule": True,
+    },
+    11: {
+        "name": "拼多多（个人账号）", "publisher": post_video_pdd, "login": True,
+        "accountMode": "browser", "supportsSchedule": True,
+        "experimental": True, "defaultDryRun": True,
+        "contentDeclarations": list(CONTENT_DECLARATIONS),
     },
 }
 
 
-def publish_videos(payload: dict) -> None:
+def publish_videos(payload: dict):
     platform_type = int(payload["type"])
     platform = PLATFORMS.get(platform_type)
     if platform is None:
@@ -88,7 +96,17 @@ def publish_videos(payload: dict) -> None:
     ]
     end_publish_time = payload.get("endpublishTime", "")
 
-    if platform_type == 3:
+    if platform_type == 11:
+        unsupported = ("goodsId", "productLink", "taskId", "thumbnailPath", "thumbnail", "collectionName")
+        if any(payload.get(key) for key in unsupported):
+            raise ValueError("拼多多个人账号首版暂不自动挂商品、绑定任务、选择合集或上传自定义封面")
+        return platform["publisher"](
+            *arguments, end_publish_time,
+            description=payload.get("description") or payload.get("content", ""),
+            content_declaration=payload.get("contentDeclaration"),
+            dry_run=payload.get("dryRun", True),
+        )
+    elif platform_type == 3:
         platform["publisher"](
             *arguments,
             payload.get("productLink", ""),

@@ -3,6 +3,7 @@ import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from playwright.async_api import Playwright, TimeoutError as PlaywrightTimeoutError, async_playwright
 import os
@@ -325,6 +326,55 @@ class TiktokVideo(object):
         await confirm.click()
         await page.wait_for_timeout(1000)
 
+    async def confirm_unfinished_checks(self, page):
+        """Accept only the user's approved immediate-post copyright warning."""
+        if self.publish_date != 0:
+            # A scheduled request must never be changed into an immediate post.
+            return False
+        for frame in page.frames:
+            titles = frame.get_by_text(re.compile(r"^继续发布[?？]$"))
+            for index in range(await titles.count()):
+                title = titles.nth(index)
+                if not await title.is_visible():
+                    continue
+                # Studio modals may lack role=dialog. Start from the exact title
+                # and use its nearest button-containing ancestor, not the page.
+                modal = title.locator(
+                    'xpath=ancestor::*[not(self::body) and not(self::html)]'
+                    '[.//*[self::button or @role="button"]'
+                    '[normalize-space(.)="立即发布"]][1]'
+                )
+                if not await modal.count() or not await modal.is_visible():
+                    continue
+                text = await modal.inner_text(timeout=1000)
+                if not ("版权检查未完成" in text and "停止检查" in text):
+                    continue
+                confirm = modal.get_by_role("button", name="立即发布", exact=True)
+                cancel = modal.get_by_role("button", name="取消", exact=True)
+                if (await confirm.count() != 1 or await cancel.count() != 1
+                        or not await cancel.is_visible()
+                        or not await confirm.is_visible()
+                        or not await confirm.is_enabled()):
+                    continue
+                await confirm.click(timeout=1000)
+                tiktok_logger.info("TikTok 检查尚未完成，按用户设置点击立即发布，继续等待发布结果")
+                return True
+        return False
+
+    async def wait_for_publish_result(self, page, timeout=300000):
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        confirmed = False
+        while asyncio.get_running_loop().time() < deadline:
+            url = urlsplit(page.url)
+            if (url.hostname == "www.tiktok.com"
+                    and url.path.rstrip("/") == "/tiktokstudio/content"):
+                return
+            if not confirmed:
+                confirmed = await self.confirm_unfinished_checks(page)
+            # Do not click either submit button again while processing is slow.
+            await asyncio.sleep(0.25)
+        raise PlaywrightTimeoutError("TikTok 未确认发布成功，请检查平台内容列表；不要直接重复提交")
+
     async def click_publish(self, page):
         # Studio's first-use editor tour can cover the submit control.
         notice = page.get_by_role("button", name=re.compile(r"^(知道了|Got it)$", re.I))
@@ -335,7 +385,7 @@ class TiktokVideo(object):
         publish_button = self.publish_button()
         await publish_button.click(timeout=60000)
         # Submit once; a slow confirmation must not trigger duplicate posts.
-        await page.wait_for_url("**/tiktokstudio/content**", timeout=300000)
+        await self.wait_for_publish_result(page)
         tiktok_logger.success("  [-] video published success")
 
     def publish_button(self):

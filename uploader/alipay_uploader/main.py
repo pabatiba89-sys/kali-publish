@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from playwright.async_api import Page, Playwright, async_playwright
@@ -17,6 +18,27 @@ ALIPAY_LIFE_ACCOUNT_URL = (
     "https://c.alipay.com/page/life-account/index"
     "?_appScene=CONTENT&appId=2030022469359777"
 )
+ALIPAY_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def normalize_publish_date(value, *, now=None) -> datetime:
+    """Validate native scheduling, interpreting timezone-less input as Beijing time."""
+    try:
+        target = value if isinstance(value, datetime) else datetime.fromisoformat(
+            str(value).strip().replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("支付宝定时发布时间不能为空，格式为 YYYY-MM-DD HH:mm") from exc
+    target = (target.replace(tzinfo=ALIPAY_TIMEZONE) if target.tzinfo is None
+              else target.astimezone(ALIPAY_TIMEZONE))
+    if target.second or target.microsecond:
+        raise ValueError("支付宝定时发布时间仅支持整分钟，请将秒和毫秒设为 0")
+    current = now if now is not None else datetime.now(ALIPAY_TIMEZONE)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=ALIPAY_TIMEZONE)
+    if not timedelta(minutes=15) <= target - current <= timedelta(days=14):
+        raise ValueError("支付宝定时时间须为当前时间后 15 分钟至 14 天，请预留登录和上传耗时")
+    return target
 
 
 def _login_result(success, status, message, account_file, current_url=""):
@@ -156,6 +178,7 @@ class AlipayVideo:
         thumbnail_path=None,
         collection_name=None,
         headless=LOCAL_CHROME_HEADLESS,
+        publish_date=None,
     ):
         self.title = str(title or "")
         self.file_path = str(file_path)
@@ -165,6 +188,7 @@ class AlipayVideo:
         self.thumbnail_path = str(thumbnail_path) if thumbnail_path else None
         self.collection_name = collection_name
         self.headless = headless
+        self.publish_date = normalize_publish_date(publish_date) if publish_date is not None else None
 
     async def open_upload_page(self, page: Page) -> None:
         await page.goto(
@@ -260,7 +284,49 @@ class AlipayVideo:
             await asyncio.sleep(2)
         raise TimeoutError("等待支付宝视频上传或转码超时")
 
+    async def verify_schedule(self, page: Page) -> None:
+        if self.publish_date is None:
+            return
+        # Login and upload can consume minutes: validate again at final submit.
+        target = normalize_publish_date(self.publish_date)
+        radio = page.get_by_role("radio", name=re.compile(r"^\s*定时发布\s*$"))
+        date = page.get_by_placeholder("请选择日期", exact=True)
+        if (await radio.count() != 1 or not await radio.is_checked()
+                or await date.count() != 1 or not await date.is_visible()
+                or await date.input_value() != target.strftime("%Y-%m-%d %H:%M")):
+            raise RuntimeError("支付宝定时选项或时间与请求不一致，已停止发布")
+        if await page.locator(
+            '.antd5-picker-dropdown:visible, .ant-picker-dropdown:visible, '
+            '.antd5-form-item-explain-error:visible, .ant-form-item-explain-error:visible'
+        ).count():
+            raise RuntimeError("支付宝定时时间尚未确认或表单校验失败，已停止发布")
+
+    async def apply_schedule(self, page: Page, timeout: int = 30000) -> None:
+        if self.publish_date is None:
+            return
+        target = normalize_publish_date(self.publish_date)
+        try:
+            radio = page.get_by_role("radio", name=re.compile(r"^\s*定时发布\s*$"))
+            if not await radio.is_visible():
+                await page.get_by_text("展开", exact=True).locator("visible=true").click(timeout=timeout)
+            await radio.check(timeout=timeout)
+            date = page.get_by_placeholder("请选择日期", exact=True)
+            await date.click(timeout=timeout)
+            await date.fill(target.strftime("%Y-%m-%d %H:%M"), timeout=timeout)
+            picker = page.locator('.antd5-picker-dropdown:visible, .ant-picker-dropdown:visible')
+            await picker.get_by_role("button", name=re.compile(r"^确\s*定$")).click(timeout=timeout)
+            await picker.wait_for(state="hidden", timeout=timeout)
+            # Blurring catches controlled inputs that revert an unaccepted value.
+            await date.blur(timeout=timeout)
+            await self.verify_schedule(page)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("支付宝定时发布时间设置或确认失败，已停止发布") from exc
+        alipay_logger.info(f"支付宝定时发布已设置：{target:%Y-%m-%d %H:%M}（北京时间）")
+
     async def submit(self, page: Page, timeout: float = 120) -> None:
+        await self.verify_schedule(page)
         button = page.get_by_role("button", name="确认发布").first
         await button.click()
         started = time.monotonic()
@@ -287,6 +353,8 @@ class AlipayVideo:
                 '.antd5-modal button:has-text("继续发布")'
             ).locator("visible=true").first
             if not continued and await continue_button.is_visible():
+                if self.publish_date is not None:
+                    normalize_publish_date(self.publish_date)
                 await continue_button.click()
                 continued = True
             await asyncio.sleep(0.25)
@@ -315,8 +383,9 @@ class AlipayVideo:
             await self.open_upload_page(page)
             await self.fill_form(page)
             await self.wait_upload(page)
+            await self.apply_schedule(page)
             await self.submit(page)
-            alipay_logger.success("支付宝生活号视频发布成功")
+            alipay_logger.success("支付宝生活号定时任务提交成功" if self.publish_date else "支付宝生活号视频发布成功")
             try:
                 await asyncio.wait_for(context.storage_state(path=self.account_file), timeout=10)
             except Exception:

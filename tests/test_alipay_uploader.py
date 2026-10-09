@@ -1,11 +1,35 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from uploader.alipay_uploader.main import AlipayVideo, format_title_with_tags
+import uploader.alipay_uploader.main as alipay
 
 
 class AlipayUploaderTests(unittest.TestCase):
+    def test_schedule_limits_and_minute_precision(self):
+        now = datetime(2030, 1, 1, 10, tzinfo=timezone(timedelta(hours=8)))
+        for delta in (timedelta(minutes=15), timedelta(days=14)):
+            self.assertEqual(alipay.normalize_publish_date(now + delta, now=now), now + delta)
+        for delta in (timedelta(minutes=14), timedelta(days=14, minutes=1), timedelta(minutes=-1)):
+            with self.assertRaisesRegex(ValueError, '15.*14'):
+                alipay.normalize_publish_date(now + delta, now=now)
+        with self.assertRaisesRegex(ValueError, '分钟'):
+            alipay.normalize_publish_date(now + timedelta(hours=1, seconds=30), now=now)
+
+    def test_schedule_uses_beijing_time_and_preserves_explicit_instant(self):
+        now = datetime(2030, 1, 1, 10, tzinfo=timezone(timedelta(hours=8)))
+        local = alipay.normalize_publish_date('2030-01-01 11:00:00', now=now)
+        explicit = alipay.normalize_publish_date('2030-01-01T03:00:00Z', now=now)
+        self.assertEqual(local, explicit)
+        self.assertEqual(local.hour, 11)
+
+    def test_missing_or_invalid_schedule_is_rejected(self):
+        for value in ('', None, 'not a date'):
+            with self.assertRaisesRegex(ValueError, '时间'):
+                alipay.normalize_publish_date(value)
+
     def test_title_tags_are_added_only_at_tag_boundaries(self):
         self.assertEqual(
             format_title_with_tags("1234567890", ["abc", "too-long"], max_length=15),
@@ -17,6 +41,27 @@ class AlipayUploaderTests(unittest.TestCase):
 
 
 class AlipayCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_schedule_does_not_submit_and_closes_browser(self):
+        context = SimpleNamespace(new_page=AsyncMock(), storage_state=AsyncMock(), close=AsyncMock())
+        browser = SimpleNamespace(new_context=AsyncMock(return_value=context), close=AsyncMock())
+        runtime = SimpleNamespace(chromium=SimpleNamespace(launch=AsyncMock(return_value=browser)))
+        uploader = AlipayVideo('title', 'unused', [], 'account.json')
+        with (
+            patch('uploader.alipay_uploader.main.Path.is_file', return_value=True),
+            patch('uploader.alipay_uploader.main._cookie_auth', AsyncMock(return_value=True)),
+            patch.object(uploader, 'open_upload_page', AsyncMock()),
+            patch.object(uploader, 'fill_form', AsyncMock()),
+            patch.object(uploader, 'wait_upload', AsyncMock()),
+            patch.object(uploader, 'apply_schedule', AsyncMock(side_effect=RuntimeError('定时设置失败'))),
+            patch.object(uploader, 'submit', AsyncMock()) as submit,
+        ):
+            with self.assertRaisesRegex(RuntimeError, '定时'):
+                await uploader.upload(runtime)
+        submit.assert_not_awaited()
+        context.storage_state.assert_not_awaited()
+        context.close.assert_awaited_once()
+        browser.close.assert_awaited_once()
+
     async def run_login_flow(self, auth_results, login_success, expect_error=False):
         events = []
         async def save_state(**kwargs):

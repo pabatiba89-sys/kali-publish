@@ -11,6 +11,7 @@ from pathlib import Path
 from conf import COOKIES_FOLDER, DATABASE_PATH, LOCAL_CHROME_HEADLESS
 from utils.browser_runtime import chromium_launch_options
 from uploader.alipay_uploader.main import alipay_cookie_gen as alipay_browser_cookie_gen
+from uploader.pdd_uploader.main import pdd_cookie_gen as pdd_browser_cookie_gen
 from uploader.tk_uploader.main import tiktok_cookie_gen as tiktok_browser_cookie_gen
 from uploader.web_publishers import browser_cookie_gen as social_browser_cookie_gen
 from uploader.youtube_uploader.main import youtube_cookie_gen as youtube_browser_cookie_gen
@@ -376,6 +377,19 @@ async def alipay_cookie_gen(id, status_queue):
         status_queue.put("500")
         return
     _record_account(10, filename, id)
+    status_queue.put("200")
+
+
+async def pdd_cookie_gen(id, status_queue):
+    filename = f"pdd-personal-{uuid.uuid4()}.json"
+    account_path = Path(COOKIES_FOLDER) / filename
+    account_path.parent.mkdir(parents=True, exist_ok=True)
+    status_queue.put("browser_opened")
+    result = await pdd_browser_cookie_gen(account_path, headless=False)
+    if not result["success"]:
+        status_queue.put("500")
+        return
+    _record_account(11, filename, id)
     status_queue.put("200")
 
 # a = asyncio.run(xiaohongshu_cookie_gen(4,None))

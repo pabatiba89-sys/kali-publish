@@ -120,6 +120,9 @@ async def check_cookie(type,file_path):
         case 10:
             from uploader.alipay_uploader.main import cookie_auth
             return await cookie_auth(Path(COOKIES_FOLDER / file_path))
+        case 11:
+            from uploader.pdd_uploader.main import cookie_auth
+            return await cookie_auth(Path(COOKIES_FOLDER / file_path))
         case _:
             return False
 
