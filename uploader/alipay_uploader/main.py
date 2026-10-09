@@ -5,6 +5,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from playwright.async_api import Page, Playwright, async_playwright
 
@@ -190,6 +191,32 @@ class AlipayVideo:
         self.headless = headless
         self.publish_date = normalize_publish_date(publish_date) if publish_date is not None else None
 
+    async def login_for_publish(self, page: Page, timeout: float = 900) -> None:
+        """Reauthenticate in the task-owned page without saving or closing it.
+
+        Standalone account registration owns a separate browser lifecycle. Never
+        call alipay_cookie_gen here: this page must survive until publication.
+        """
+        await page.goto(ALIPAY_PORTAL_HOME, wait_until="domcontentloaded", timeout=120000)
+        alipay_logger.info("请在当前发布窗口扫码登录支付宝，登录后将继续上传，不会关闭窗口")
+        deadline = time.monotonic() + timeout
+        saw_login = False
+        while time.monotonic() < deadline:
+            if page.is_closed():
+                raise RuntimeError("支付宝发布登录窗口已关闭，本次视频尚未发布")
+            url = urlsplit(page.url)
+            login_visible = await page.locator('iframe[title="login"]:visible').count()
+            if login_visible or url.hostname == "auth.alipay.com" or "login" in url.path.lower():
+                saw_login = True
+            elif url.hostname == "c.alipay.com":
+                entry = page.locator('a:has-text("发布视频")').first
+                if saw_login or (await entry.is_visible() and await entry.is_enabled()):
+                    # The caller must still open and validate the upload page
+                    # before touching the video or reporting login success.
+                    return
+            await asyncio.sleep(0.25)
+        raise RuntimeError("支付宝生活号登录未完成或已超时，本次视频尚未发布")
+
     async def open_upload_page(self, page: Page) -> None:
         await page.goto(
             ALIPAY_LIFE_ACCOUNT_URL,
@@ -363,24 +390,22 @@ class AlipayVideo:
     async def upload(self, playwright: Playwright) -> None:
         if not Path(self.file_path).is_file():
             raise FileNotFoundError(f"Video file does not exist: {self.file_path}")
-        if not await _cookie_auth(playwright, self.account_file):
-            alipay_logger.info("支付宝生活号登录态失效，打开登录页；扫码成功后将继续本次发布")
-            # Login must be visible even when unattended publishing is headless.
-            # The existing login flow saves the refreshed session at this path.
-            result = await alipay_cookie_gen(self.account_file, headless=False)
-            if not result.get("success"):
-                raise RuntimeError("支付宝生活号登录未完成或已超时，本次视频尚未发布")
-            if not await _cookie_auth(playwright, self.account_file):
-                raise RuntimeError("支付宝生活号登录后会话仍不可用，本次视频尚未发布")
-            alipay_logger.info("支付宝生活号重新登录成功，继续本次发布")
+        session_valid = await _cookie_auth(playwright, self.account_file)
         browser = await playwright.chromium.launch(
-            **chromium_launch_options(headless=self.headless)
+            **chromium_launch_options(headless=self.headless if session_valid else False)
         )
         context = None
         try:
-            context = await browser.new_context(storage_state=self.account_file)
+            # Expired/missing state starts a fresh session in the publication
+            # browser; no temporary registration browser or second cookie probe.
+            options = {"storage_state": self.account_file} if session_valid else {}
+            context = await browser.new_context(**options)
             page = await context.new_page()
+            if not session_valid:
+                await self.login_for_publish(page)
             await self.open_upload_page(page)
+            if not session_valid:
+                alipay_logger.info("支付宝生活号重新登录成功，已进入发布页，继续本次发布")
             await self.fill_form(page)
             await self.wait_upload(page)
             await self.apply_schedule(page)

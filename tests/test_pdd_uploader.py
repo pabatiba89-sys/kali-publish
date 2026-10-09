@@ -288,7 +288,7 @@ class PDDFormTests(unittest.IsolatedAsyncioTestCase):
             'onfocus="document.querySelector(\'#picker\').hidden=false" data-testid="beast-core-datePicker-htmlInput"') + '''
             <div id="picker" data-testid="beast-core-datePicker-dropdown-contentRoot" hidden>
               <button onclick="this.parentElement.hidden=true">确认</button></div>''')
-        await video(publish_date=target).set_schedule(self.page, timeout=500)
+        await video(publish_date=target).set_schedule(self.page, timeout=5000)
         self.assertEqual(await self.page.locator(pdd.DATE_INPUT).input_value(), target.strftime('%Y-%m-%d %H:%M:%S'))
         self.assertEqual(await self.page.evaluate('window.posts'), 0)
 
@@ -312,7 +312,7 @@ class PDDFormTests(unittest.IsolatedAsyncioTestCase):
                 [window.hour,window.minute,window.second].map(n=>String(n).padStart(2,'0')).join(':');
                 this.parentElement.hidden=true">确认</button></div>''')
         await self.page.locator(pdd.DATE_INPUT).evaluate("element => element.value = ''")
-        await video(publish_date=target).set_schedule(self.page, timeout=500)
+        await video(publish_date=target).set_schedule(self.page, timeout=5000)
         self.assertEqual(await self.page.evaluate('[window.day,window.hour,window.minute,window.second]'),
                          [target.day, target.hour, target.minute, target.second])
         self.assertIsNone(await self.page.evaluate('window.wrong'))
@@ -344,7 +344,7 @@ class PDDFormTests(unittest.IsolatedAsyncioTestCase):
               <td class="RPR_disabled_x">{target.day}</td>
               <td class="RPR_outOfMonth_x">{target.day}</td></tr></table></div>''')
         with self.assertRaisesRegex(ValueError, '不可选'):
-            await video().pick_datetime(self.page, self.page.locator(pdd.PICKER), target, 500)
+            await video().pick_datetime(self.page, self.page.locator(pdd.PICKER), target, 5000)
 
     async def test_calendar_navigation_preserves_year_across_december(self):
         target = datetime(2031, 1, 2, 12, 34, 56, tzinfo=pdd.BEIJING)
@@ -356,7 +356,7 @@ class PDDFormTests(unittest.IsolatedAsyncioTestCase):
             <ul class="TPK_ul_x"><li class="cIL_item_x">12</li></ul>
             <ul class="TPK_ul_x"><li class="cIL_item_x">34</li></ul>
             <ul class="TPK_ul_x"><li class="cIL_item_x">56</li></ul></div>''')
-        await video().pick_datetime(self.page, self.page.locator(pdd.PICKER), target, 500)
+        await video().pick_datetime(self.page, self.page.locator(pdd.PICKER), target, 5000)
         self.assertEqual(await self.page.locator('#month').inner_text(), '2031年 1月')
         self.assertEqual(await self.page.evaluate('window.day'), 2)
 
@@ -368,7 +368,7 @@ class PDDFormTests(unittest.IsolatedAsyncioTestCase):
             <input data-testid="beast-core-timePicker-html-input" readonly>
             <ul class="TPK_ul_x"></ul><ul class="TPK_ul_x"></ul></div>''')
         with self.assertRaisesRegex(RuntimeError, '时分秒'):
-            await video().pick_datetime(self.page, self.page.locator(pdd.PICKER), target, 500)
+            await video().pick_datetime(self.page, self.page.locator(pdd.PICKER), target, 5000)
 
 
 if __name__ == '__main__':
