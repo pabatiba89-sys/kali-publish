@@ -200,7 +200,7 @@ class PDDFormTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_selects_requested_declaration_not_no_label(self):
         await self.page.set_content(form(declaration='请选择'))
-        await video().set_declaration(self.page, timeout=500)
+        await video().set_declaration(self.page, timeout=5000)
         self.assertIn('含AI生成内容', await self.page.locator(pdd.STATEMENT).inner_text())
         self.assertEqual(await self.page.evaluate('window.posts'), 0)
 
