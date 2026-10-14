@@ -7,11 +7,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.async_api import Page, Playwright, async_playwright
+from playwright.async_api import Page, Playwright, async_playwright, TimeoutError as PlaywrightTimeoutError
 
 from conf import LOCAL_CHROME_HEADLESS
 from utils.browser_runtime import chromium_launch_options
 from utils.log import alipay_logger
+from utils.publish_lifecycle import close_owned_browser, navigation_read
 
 
 ALIPAY_PORTAL_HOME = "https://c.alipay.com/page/portal/home"
@@ -134,6 +135,7 @@ async def _cookie_auth(playwright: Playwright, account_file) -> bool:
     browser = await playwright.chromium.launch(
         **chromium_launch_options(headless=True)
     )
+    context = None
     try:
         context = await browser.new_context(storage_state=account_path)
         page = await context.new_page()
@@ -143,11 +145,18 @@ async def _cookie_auth(playwright: Playwright, account_file) -> bool:
             timeout=120000,
         )
         await page.wait_for_timeout(5000)
-        return await _login_complete(page)
+        # The portal can retain a hidden login iframe after a successful scan.
+        # Verify the publishing entry rather than rejecting any iframe node.
+        visible_login = await navigation_read(page.locator('iframe[title="login"]:visible').count)
+        entry = page.locator('a:has-text("发布视频")').first
+        return (urlsplit(page.url).hostname == 'c.alipay.com'
+                and not visible_login
+                and await navigation_read(entry.is_visible)
+                and await navigation_read(entry.is_enabled))
     except Exception:
         return False
     finally:
-        await browser.close()
+        await close_owned_browser(context, browser, alipay_logger)
 
 
 async def cookie_auth(account_file) -> bool:
@@ -201,32 +210,81 @@ class AlipayVideo:
         alipay_logger.info("请在当前发布窗口扫码登录支付宝，登录后将继续上传，不会关闭窗口")
         deadline = time.monotonic() + timeout
         saw_login = False
+        settled_since = None
         while time.monotonic() < deadline:
             if page.is_closed():
                 raise RuntimeError("支付宝发布登录窗口已关闭，本次视频尚未发布")
             url = urlsplit(page.url)
-            login_visible = await page.locator('iframe[title="login"]:visible').count()
+            login_visible = await navigation_read(page.locator('iframe[title="login"]:visible').count)
             if login_visible or url.hostname == "auth.alipay.com" or "login" in url.path.lower():
                 saw_login = True
+                settled_since = None
             elif url.hostname == "c.alipay.com":
                 entry = page.locator('a:has-text("发布视频")').first
-                if saw_login or (await entry.is_visible() and await entry.is_enabled()):
+                if settled_since is None:
+                    settled_since = time.monotonic()
+                if (await navigation_read(entry.is_visible) and await navigation_read(entry.is_enabled)) or (
+                    saw_login and time.monotonic() - settled_since >= 2
+                ):
                     # The caller must still open and validate the upload page
                     # before touching the video or reporting login success.
                     return
+            else:
+                settled_since = None
             await asyncio.sleep(0.25)
         raise RuntimeError("支付宝生活号登录未完成或已超时，本次视频尚未发布")
 
-    async def open_upload_page(self, page: Page) -> None:
+    async def open_upload_page(self, page: Page, timeout: float = 900) -> None:
+        try:
+            await asyncio.wait_for(self._open_upload_page(page), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("支付宝登录或发布页等待超时（最长15分钟），视频尚未提交") from exc
+
+    async def _open_upload_page(self, page: Page) -> None:
         await page.goto(
             ALIPAY_LIFE_ACCOUNT_URL,
             wait_until="domcontentloaded",
             timeout=120000,
         )
-        entry = page.locator('a:has-text("发布视频")').first
-        await entry.wait_for(state="visible", timeout=60000)
-        await entry.click()
-        await page.wait_for_url("**/content-creation/publish/short-video**", timeout=60000)
+        saw_login = False
+        settled_since = None
+        entry_clicked = False
+        while True:
+            if page.is_closed():
+                raise RuntimeError("支付宝发布窗口已关闭，视频尚未提交")
+            url = urlsplit(page.url)
+            login_visible = await navigation_read(page.locator('iframe[title="login"]:visible').count)
+            if login_visible or url.hostname == "auth.alipay.com" or "login" in url.path.lower():
+                if not saw_login:
+                    alipay_logger.info("发布页要求重新登录，请在当前窗口扫码；完成后继续本次发布")
+                saw_login = True
+                settled_since = None
+                entry_clicked = False
+            elif url.hostname == "c.alipay.com":
+                if "/content-creation/publish/short-video" in url.path:
+                    if await navigation_read(page.locator('input[type="file"]').count):
+                        return
+                else:
+                    entry = page.locator('a:has-text("发布视频")').first
+                    if not entry_clicked and await navigation_read(entry.is_visible) and await navigation_read(entry.is_enabled):
+                        try:
+                            await entry.click(timeout=1000)
+                            entry_clicked = True
+                        except PlaywrightTimeoutError:
+                            # The login overlay can appear between detection and click.
+                            pass
+                    elif saw_login and not entry_clicked:
+                        if settled_since is None:
+                            settled_since = time.monotonic()
+                        elif time.monotonic() - settled_since >= 2:
+                            # Scan redirects to the portal, not necessarily the life account.
+                            # Navigate only after it settles, never refresh an active QR code.
+                            saw_login = False
+                            settled_since = None
+                            await page.goto(ALIPAY_LIFE_ACCOUNT_URL, wait_until="domcontentloaded", timeout=120000)
+            else:
+                settled_since = None
+            await asyncio.sleep(0.25)
 
     async def fill_form(self, page: Page) -> None:
         file_input = page.locator('input[type="file"]').first
@@ -366,20 +424,20 @@ class AlipayVideo:
             result = page.get_by_text(
                 re.compile(r"^(?:视频|作品)?(?:发布成功|提交成功)[！!。]?$"),
             ).locator("visible=true")
-            if await result.count():
+            if await navigation_read(result.count):
                 return
             success = page.locator(
                 '.antd5-message-notice-content:has-text("发布成功"), '
                 '.antd5-message-notice-content:has-text("提交成功"), '
                 '.antd5-message-notice-content:has-text("审核中")'
             ).locator("visible=true")
-            if await success.count():
+            if await navigation_read(success.count):
                 return
             continue_button = page.locator(
                 '.antd5-modal-wrap button:has-text("继续发布"), '
                 '.antd5-modal button:has-text("继续发布")'
             ).locator("visible=true").first
-            if not continued and await continue_button.is_visible():
+            if not continued and await navigation_read(continue_button.is_visible):
                 if self.publish_date is not None:
                     normalize_publish_date(self.publish_date)
                 await continue_button.click()
@@ -395,6 +453,7 @@ class AlipayVideo:
             **chromium_launch_options(headless=self.headless if session_valid else False)
         )
         context = None
+        stage = "创建发布会话"
         try:
             # Expired/missing state starts a fresh session in the publication
             # browser; no temporary registration browser or second cookie probe.
@@ -402,27 +461,31 @@ class AlipayVideo:
             context = await browser.new_context(**options)
             page = await context.new_page()
             if not session_valid:
+                stage = "扫码重新登录"
                 await self.login_for_publish(page)
+            stage = "进入发布页"
             await self.open_upload_page(page)
             if not session_valid:
                 alipay_logger.info("支付宝生活号重新登录成功，已进入发布页，继续本次发布")
+            stage = "填写视频和封面"
             await self.fill_form(page)
+            stage = "等待视频上传"
             await self.wait_upload(page)
+            stage = "设置发布时间"
             await self.apply_schedule(page)
+            stage = "提交并确认发布结果"
             await self.submit(page)
             alipay_logger.success("支付宝生活号定时任务提交成功" if self.publish_date else "支付宝生活号视频发布成功")
             try:
-                await asyncio.wait_for(context.storage_state(path=self.account_file), timeout=10)
+                await asyncio.wait_for(context.storage_state(path=self.account_file), timeout=60)
+                alipay_logger.success("支付宝发布后登录态已更新到原账号文件")
             except Exception:
                 alipay_logger.warning("发布已成功，但登录态刷新未完成；继续关闭发布窗口")
+        except Exception as exc:
+            alipay_logger.error("支付宝发布失败 [{}] {}: {}", stage, type(exc).__name__, str(exc))
+            raise
         finally:
-            try:
-                if context is not None:
-                    await asyncio.wait_for(context.close(), timeout=10)
-            except Exception:
-                alipay_logger.warning("发布会话关闭未完成，继续关闭本次发布浏览器")
-            finally:
-                await asyncio.wait_for(browser.close(), timeout=10)
+            await close_owned_browser(context, browser, alipay_logger)
 
     async def main(self):
         async with async_playwright() as playwright:

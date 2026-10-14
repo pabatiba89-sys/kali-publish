@@ -1,15 +1,25 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 
-from playwright.async_api import Playwright, async_playwright
+from playwright.async_api import Playwright, async_playwright, expect, TimeoutError as PlaywrightTimeoutError
 import os
 import asyncio
+import re
+import time
+from utils.publish_lifecycle import close_owned_browser
 
 from conf import LOCAL_CHROME_PATH
 from utils.base_social_media import set_init_script
 from utils.browser_runtime import chromium_launch_options
 from utils.files_times import get_absolute_path
 from utils.log import tencent_logger
+
+LAOLU_PRODUCT_ID = '10000436376366'
+LAOLU_PRODUCT_NAME = '陆老师岳老师的视频创业课'
+PRODUCT_TIMEOUT_MS = 15 * 60 * 1000
+PRODUCT_CONFIRM = re.compile(r'^\s*(?:添加(?:\s*[（(]\s*1\s*[）)])?|确\s*[认定](?:\s*[（(]\s*1\s*[）)])?)\s*$')
+PRODUCT_DIALOG_ACTION = re.compile(r'^\s*(?:添加(?:\s*[（(]\s*\d+\s*[）)])?|确\s*[认定](?:\s*[（(]\s*\d+\s*[）)])?)\s*$')
+PRODUCT_DIALOGS = '[role="dialog"]:visible, .weui-desktop-dialog:visible, .weui-desktop-dialog__wrp:visible'
 
 def format_str_for_short_title(origin_title: str) -> str:
     # 定义允许的特殊字符
@@ -77,7 +87,7 @@ async def weixin_setup(account_file, handle=False):
 
 
 class TencentVideo(object):
-    def __init__(self, title, file_path, tags, endpublishTime: str, account_file, category=None,enableTimer=False,):
+    def __init__(self, title, file_path, tags, endpublishTime: str, account_file, category=None,enableTimer=False, *, account_name=''):
         self.title = title  # 视频标题
         self.file_path = file_path
         self.tags = tags
@@ -86,6 +96,125 @@ class TencentVideo(object):
         self.category = category
         self.local_executable_path = LOCAL_CHROME_PATH
         self.enable_timer = enableTimer
+        self.account_name = account_name
+
+    @staticmethod
+    def product_dialog(page, title):
+        # Include the footer: some versions put it outside the inner dialog body.
+        return page.locator(PRODUCT_DIALOGS).filter(
+            has=page.get_by_text(title, exact=True)
+        ).filter(has=page.get_by_text(PRODUCT_DIALOG_ACTION)).last
+
+    @staticmethod
+    async def confirm_product_dialog(dialog, timeout):
+        # Text also covers custom div/a controls without an accessible button role.
+        confirm = dialog.get_by_text(PRODUCT_CONFIRM).locator('visible=true')
+        await expect(confirm).to_have_count(1, timeout=timeout)
+        await expect(confirm).to_be_enabled(timeout=timeout)
+        disabled = confirm.locator(
+            "xpath=ancestor-or-self::*[@disabled or @aria-disabled='true' "
+            "or contains(@class, 'disabled')]"
+        )
+        await expect(disabled).to_have_count(0, timeout=timeout)
+        await confirm.click(timeout=timeout)
+
+    async def confirm_product_timing(self, page, timeout):
+        timing = self.product_dialog(page, '选择商品出现时机')
+        deadline = time.monotonic() + timeout / 1000
+        opened = False
+        # The picker may open this automatically, or expose the edit link first.
+        while not await timing.is_visible():
+            remaining = int((deadline - time.monotonic()) * 1000)
+            if remaining <= 0:
+                raise RuntimeError('未出现商品时机确认窗口')
+            edit = page.get_by_text('修改商品出现时机', exact=True).locator('visible=true')
+            if not opened and await edit.count() == 1:
+                try:
+                    await edit.click(timeout=min(1000, remaining))
+                    opened = True
+                except PlaywrightTimeoutError:
+                    # A delayed automatic dialog can cover the edit link.
+                    pass
+            await asyncio.sleep(0.1)
+        await timing.get_by_text(re.compile(r'^\s*视频播放\s*5\s*秒后出现\s*$')).click(timeout=timeout)
+        await self.confirm_product_dialog(timing, timeout)
+        await timing.wait_for(state='hidden', timeout=timeout)
+
+    def product_stage(self, stage):
+        self._product_stage = stage
+        tencent_logger.info('视频号商品步骤：{}', stage)
+
+    async def add_required_product(self, page, timeout=PRODUCT_TIMEOUT_MS):
+        """Attach the explicitly requested course only for 老陆 account names."""
+        if '老陆' not in self.account_name:
+            return
+        self._product_stage = '打开商品入口'
+        try:
+            # One shared allowance, not a fresh 15 minutes for every action.
+            await asyncio.wait_for(self._add_required_product(page, timeout), timeout=timeout / 1000)
+        except Exception as exc:
+            # Record the actual failed locator without logging cookies or locals.
+            tencent_logger.error('视频号商品步骤失败 [{}] {}: {}',
+                                 self._product_stage, type(exc).__name__, str(exc))
+            raise RuntimeError(f'视频号商品步骤【{self._product_stage}】未完成，已停止发布；'
+                               '详情见 logs/tencent.log') from exc
+
+    async def _add_required_product(self, page, timeout):
+        try:
+            self.product_stage('打开商品入口')
+            form = page.locator('div.form').filter(has=page.locator('div.input-editor'))
+            # Product controls may use either an input placeholder or plain text.
+            chooser = page.get_by_text('选择链接', exact=True).or_(page.get_by_placeholder('选择链接', exact=True))
+            await chooser.locator('visible=true').click(timeout=timeout)
+            await page.get_by_text('商品', exact=True).locator('visible=true').click(timeout=timeout)
+            picker = page.get_by_text('选择需要添加的商品', exact=True).or_(
+                page.get_by_placeholder('选择需要添加的商品', exact=True))
+            await picker.locator('visible=true').click(timeout=timeout)
+            self.product_stage('等待橱窗商品弹窗')
+            dialog = self.product_dialog(page, '从橱窗添加商品')
+            await dialog.wait_for(state='visible', timeout=timeout)
+            await dialog.get_by_text('从橱窗添加商品', exact=True).click(timeout=timeout)
+            self.product_stage('按商品编号筛选')
+            search = dialog.get_by_placeholder('请输入商品名称/编码搜索', exact=True)
+            await search.fill(LAOLU_PRODUCT_ID, timeout=timeout)
+            await dialog.get_by_text('筛选', exact=True).click(timeout=timeout)
+            self.product_stage('定位指定商品行')
+            # The ID label and number may be separate DOM nodes. Match the
+            # exact number, not a substring, and ignore hidden duplicate rows.
+            identity = dialog.get_by_text(re.compile(
+                r'^\s*(?:ID\s*[:：]?\s*)?' + LAOLU_PRODUCT_ID + r'\s*$'
+            )).locator('visible=true')
+            await expect(identity).to_have_count(1, timeout=timeout)
+            self.product_stage('核对商品名称和选择控件')
+            row = identity.locator(
+                "xpath=ancestor::*[.//input[@type='radio' or @type='checkbox'] "
+                "or .//*[@role='radio' or @role='checkbox']][1]"
+            )
+            await expect(row.get_by_text(LAOLU_PRODUCT_NAME, exact=True)).to_be_visible(timeout=timeout)
+            self.product_stage('选中指定商品')
+            control = row.locator('input[type="radio"], input[type="checkbox"], '
+                                  '[role="radio"], [role="checkbox"]')
+            await expect(control).to_have_count(1, timeout=timeout)
+            # Do not toggle a previously selected checkbox off.
+            if not await control.is_checked():
+                if await control.is_visible():
+                    await control.check(timeout=timeout)
+                else:
+                    await row.click(timeout=timeout)
+            await expect(control).to_be_checked(timeout=timeout)
+            self.product_stage('确认添加商品')
+            await self.confirm_product_dialog(dialog, timeout)
+            await dialog.wait_for(state='hidden', timeout=timeout)
+            self.product_stage('确认商品出现时机')
+            await self.confirm_product_timing(page, timeout)
+            self.product_stage('核对发布表单中的商品')
+            # A disappearing picker alone is not evidence of attachment.
+            await expect(form.get_by_text(LAOLU_PRODUCT_NAME, exact=True)).to_be_visible(timeout=timeout)
+            tencent_logger.info('已添加指定课程商品：' + LAOLU_PRODUCT_ID)
+        except asyncio.CancelledError:
+            # wait_for cancels on the shared deadline. Log the current stage.
+            tencent_logger.error('视频号商品等待已到期或任务被取消，当前步骤：{}', self._product_stage)
+            raise
 
     async def set_schedule_time_tencent(self, page, publish_date):
         label_element = page.locator("label").filter(has_text="定时").nth(1)
@@ -135,12 +264,21 @@ class TencentVideo(object):
     async def upload(self, playwright: Playwright) -> None:
         # 使用 Chromium (这里使用系统内浏览器，用chromium 会造成h264错误
         browser = await playwright.chromium.launch(**chromium_launch_options(headless=False))
-        # 创建一个浏览器上下文，使用指定的 cookie 文件
-        context = await browser.new_context(storage_state=f"{self.account_file}")
-        context = await set_init_script(context)
+        context = None
+        try:
+            context = await browser.new_context(storage_state=f"{self.account_file}")
+            context = await set_init_script(context)
+            page = await context.new_page()
+            await self.publish_page(page)
+            await context.storage_state(path=f"{self.account_file}")
+            tencent_logger.success('  [-]cookie更新完毕！')
+        finally:
+            await self.close_publish_browser(context, browser)
 
-        # 创建一个新的页面
-        page = await context.new_page()
+    async def close_publish_browser(self, context, browser, timeout=10):
+        await close_owned_browser(context, browser, tencent_logger, timeout)
+
+    async def publish_page(self, page):
         # 访问指定的 URL
         await page.goto("https://channels.weixin.qq.com/platform/post/create")
         tencent_logger.info(f'[+]正在上传-------{self.title}.mp4')
@@ -151,8 +289,6 @@ class TencentVideo(object):
         await file_input.set_input_files(self.file_path)
         # 填充标题和话题
         await self.add_title_tags(page)
-        # 添加商品
-        # await self.add_product(page)
         # 合集功能
          # 位置选择
         await self.set_location(page)
@@ -170,13 +306,8 @@ class TencentVideo(object):
         # 添加短标题
         await self.add_short_title(page)
 
+        await self.add_required_product(page)
         await self.click_publish(page)
-        await context.storage_state(path=f"{self.account_file}")  # 保存cookie
-        tencent_logger.success('  [-]cookie更新完毕！')
-        await asyncio.sleep(2)  # 这里延迟是为了方便眼睛直观的观看
-        # 关闭浏览器上下文和浏览器实例
-        await context.close()
-        await browser.close()
 
     async def add_short_title(self, page):
         short_title_element = page.get_by_text("短标题", exact=True).locator("..").locator(
@@ -194,23 +325,15 @@ class TencentVideo(object):
             await location_elements.first.click()
 
     async def click_publish(self, page):
-        while True:
-            try:
-                publish_buttion = page.locator('div.form-btns button:has-text("发表")')
-                if await publish_buttion.count():
-                    await publish_buttion.click()
-                await page.wait_for_url("https://channels.weixin.qq.com/platform/post/list", timeout=5000)
-                tencent_logger.success("  [-]视频发布成功")
-                break
-            except Exception as e:
-                current_url = page.url
-                if "https://channels.weixin.qq.com/platform/post/list" in current_url:
-                    tencent_logger.success("  [-]视频发布成功")
-                    break
-                else:
-                    tencent_logger.exception(f"  [-] Exception: {e}")
-                    tencent_logger.info("  [-] 视频正在发布中...")
-                    await asyncio.sleep(0.5)
+        # Submit once; slow processing must not trigger duplicate publication.
+        await page.locator('div.form-btns button:has-text("发表")').click(timeout=60000)
+        try:
+            await page.wait_for_url(re.compile(
+                r'^https://channels\.weixin\.qq\.com/platform/post/list(?:[?#].*)?$'
+            ), timeout=PRODUCT_TIMEOUT_MS, wait_until='domcontentloaded')
+        except PlaywrightTimeoutError as exc:
+            raise RuntimeError('视频号未确认发表结果，请先检查作品列表，勿直接重复发布') from exc
+        tencent_logger.success("  [-]视频发布成功")
 
     async def detect_upload_status(self, page):
         while True:

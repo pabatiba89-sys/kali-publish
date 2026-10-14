@@ -20,6 +20,7 @@ from utils.browser_runtime import (
     save_chrome_storage_state,
 )
 from utils.log import facebook_logger, instagram_logger, x_logger
+from utils.publish_lifecycle import close_owned_browser
 
 PROCESSING_TIMEOUT_MS = 15 * 60 * 1000
 
@@ -172,9 +173,7 @@ async def _open_account_context(playwright: Playwright, account_file, headless: 
 
 
 async def _close_account_context(context, browser) -> None:
-    await context.close()
-    if browser is not None:
-        await browser.close()
+    await close_owned_browser(context, browser, x_logger)
 
 
 async def _browser_cookie_auth(playwright: Playwright, platform_type: int, account_file) -> bool:
@@ -296,17 +295,24 @@ class BrowserVideoPublisher:
         page.set_default_timeout(60000)
         try:
             await self.publish(page)
-            await context.storage_state(
-                path=chrome_storage_state_path(self.account_file)
-            )
-        except Exception:
+            try:
+                await asyncio.wait_for(context.storage_state(
+                    path=chrome_storage_state_path(self.account_file)
+                ), timeout=60)
+            except Exception as exc:
+                _config(self.platform_type)['logger'].warning(
+                    '发布成功，但登录态保存未完成（{}）；请勿重复发布', type(exc).__name__)
+        except Exception as exc:
+            _config(self.platform_type)['logger'].error(
+                '发布失败 [{}] {}: {}', getattr(self, '_publish_stage', '发布流程'),
+                type(exc).__name__, str(exc))
             failure_dir = Path(BASE_DIR) / "logs" / "failures"
             failure_dir.mkdir(parents=True, exist_ok=True)
             try:
-                await page.screenshot(
+                await asyncio.wait_for(page.screenshot(
                     path=str(failure_dir / f"{self.platform_slug}-publish-failed.png"),
                     full_page=True,
-                )
+                ), timeout=10)
             except Exception:
                 pass
             raise
@@ -402,22 +408,32 @@ class InstagramWebVideo(BrowserVideoPublisher):
         return caption
 
     async def publish(self, page: Page) -> None:
+        self._publish_stage = '打开编辑器'
         file_input = await self.open_composer(page)
+        self._publish_stage = '上传视频'
         await file_input.set_input_files(self.file_path, timeout=PROCESSING_TIMEOUT_MS)
+        self._publish_stage = '编辑视频和文案'
         await self.prepare_caption(page)
+        self._publish_stage = '点击分享'
         await _click_text(page, ["Share", "分享", "发布"], timeout=PROCESSING_TIMEOUT_MS)
+        self._publish_stage = '确认分享结果'
+        await self.wait_share_result(page)
+        instagram_logger.success("Instagram 视频发布成功")
+
+    async def wait_share_result(self, page: Page, timeout=PROCESSING_TIMEOUT_MS):
+        # Match complete completion messages, not arbitrary feed text containing 已分享.
+        dialog = page.get_by_role('dialog').locator('visible=true')
         success = await _first_visible(
             [
-                page.get_by_text("Your reel has been shared", exact=False),
-                page.get_by_text("Your post has been shared", exact=False),
-                page.get_by_text("已分享", exact=False),
-                page.get_by_text("已发布", exact=False),
+                dialog.get_by_text(re.compile(
+                    r"^(?:Your (?:reel|post) has been shared[.!]?|"
+                    r"你的\s*(?:Reels?|帖子|贴文|貼文)\s*已(?:分享|共享|发布|發佈)[。！!]?|"
+                    r"分享了\s*Reels|已分享|已发布)$", re.I)),
             ],
-            timeout=PROCESSING_TIMEOUT_MS,
+            timeout=timeout,
         )
         if not await success.is_visible():
             raise RuntimeError("Instagram 未返回发布成功提示")
-        instagram_logger.success("Instagram 视频发布成功")
 
 
 class FacebookWebVideo(BrowserVideoPublisher):

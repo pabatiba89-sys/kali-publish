@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from flask import Flask
 from datetime import datetime, timezone, timedelta
 from unittest.mock import Mock, patch
 
@@ -7,6 +9,16 @@ from uploader.tk_uploader.main import TiktokVideo
 
 
 class BrowserPublisherWiringTests(unittest.TestCase):
+    @patch.object(postVideo.asyncio, 'run')
+    @patch.object(postVideo, 'AlipayVideo')
+    def test_alipay_uses_active_account_and_video_directories(self, video_class, run):
+        app = Flask(__name__)
+        app.config.update(COOKIES_FOLDER='/active/accounts', VIDEO_FOLDER='/active/videos')
+        with app.app_context():
+            postVideo.post_video_alipay('title', ['video.mp4'], [], ['account.json'])
+        self.assertEqual(video_class.call_args.args[3], Path('/active/accounts/account.json'))
+        self.assertEqual(video_class.call_args.args[1], Path('/active/videos/video.mp4'))
+
     @patch.object(postVideo.asyncio, 'run')
     @patch.object(postVideo, 'AlipayVideo')
     def test_alipay_passes_schedule_to_uploader(self, video_class, run):

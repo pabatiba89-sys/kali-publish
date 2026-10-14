@@ -1,4 +1,8 @@
 import asyncio
+import sqlite3
+from contextlib import closing
+import conf
+from flask import current_app, has_app_context
 from pathlib import Path
 from datetime import datetime
 from conf import COOKIES_FOLDER, VIDEO_FOLDER
@@ -18,21 +22,42 @@ from uploader.web_publishers import (
 )
 
 
+def _tencent_account_names(account_files):
+    """Resolve identities from the active database, never from cookie filenames."""
+    database = current_app.config['DATABASE_PATH'] if has_app_context() else conf.DATABASE_PATH
+    names = {}
+    with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro', uri=True)) as connection:
+        for filename in account_files:
+            rows = connection.execute(
+                'SELECT userName FROM user_info WHERE type = ? AND filePath = ?',
+                (2, str(filename)),
+            ).fetchall()
+            unique = {row[0].strip() for row in rows if row[0] and row[0].strip()}
+            if len(unique) != 1:
+                raise ValueError('无法唯一确认视频号账号名称，请先检查账号记录，已停止发布')
+            names[str(filename)] = unique.pop()
+    return names
+
+
 def post_video_tencent(title,files,tags,account_file,category=TencentZoneTypes.LIFESTYLE.value,enableTimer=False,videos_per_day = 1, daily_times=None,start_days = 0,endpublishTime=''):
+    account_names = _tencent_account_names(account_file)
+    cookie_root = Path(current_app.config['COOKIES_FOLDER']) if has_app_context() else COOKIES_FOLDER
+    video_root = Path(current_app.config['VIDEO_FOLDER']) if has_app_context() else VIDEO_FOLDER
+    accounts = [(cookie_root / file, account_names[str(file)]) for file in account_file]
     # 生成文件的完整路径
-    account_file = [Path(COOKIES_FOLDER / file) for file in account_file]
-    files = [Path(VIDEO_FOLDER / file) for file in files]
+    files = [video_root / file for file in files]
     if enableTimer:
         endpublishTime = parse_publish_date(endpublishTime)
 
     for index, file in enumerate(files):
-        for cookie in account_file:
+        for cookie, account_name in accounts:
             print(f"文件路径{str(file)}")
             # 打印视频文件名、标题和 hashtag
             print(f"视频文件名：{file}")
             print(f"标题：{title}")
             print(f"Hashtag：{tags}")
-            app = TencentVideo(title, str(file), tags, endpublishTime, cookie, category,enableTimer)
+            app = TencentVideo(title, str(file), tags, endpublishTime, cookie, category,enableTimer,
+                               account_name=account_name)
             asyncio.run(app.main(), debug=False)
 
 
@@ -206,8 +231,10 @@ def post_video_alipay(title, files, tags, account_file, category=None, enableTim
                       videos_per_day=1, daily_times=None, start_days=0, endpublishTime='',
                       description='', thumbnail_path=None, collection_name=None):
     publish_date = normalize_alipay_publish_date(endpublishTime) if enableTimer else None
-    account_paths = [Path(COOKIES_FOLDER / file) for file in account_file]
-    video_paths = [Path(VIDEO_FOLDER / file) for file in files]
+    cookie_folder = Path(current_app.config['COOKIES_FOLDER']) if has_app_context() else COOKIES_FOLDER
+    video_folder = Path(current_app.config['VIDEO_FOLDER']) if has_app_context() else VIDEO_FOLDER
+    account_paths = [cookie_folder / file for file in account_file]
+    video_paths = [video_folder / file for file in files]
     for video_path in video_paths:
         for account_path in account_paths:
             publisher = AlipayVideo(

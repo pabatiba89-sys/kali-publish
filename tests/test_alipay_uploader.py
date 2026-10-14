@@ -180,6 +180,27 @@ class AlipayCleanupTests(unittest.IsolatedAsyncioTestCase):
             await uploader.upload(runtime)
         browser.close.assert_awaited_once()
 
+    async def test_browser_cleanup_does_not_mask_publish_error(self):
+        failure = RuntimeError('登录后发布页不可用')
+        context = SimpleNamespace(new_page=AsyncMock(), storage_state=AsyncMock(),
+                                  close=AsyncMock(side_effect=TimeoutError()))
+        browser = SimpleNamespace(new_context=AsyncMock(return_value=context),
+                                  close=AsyncMock(side_effect=TimeoutError()))
+        runtime = SimpleNamespace(chromium=SimpleNamespace(launch=AsyncMock(return_value=browser)))
+        uploader = AlipayVideo('title', 'unused', [], 'unused')
+        with (
+            patch.object(alipay.Path, 'is_file', return_value=True),
+            patch.object(alipay, '_cookie_auth', AsyncMock(return_value=True)),
+            patch.object(uploader, 'open_upload_page', AsyncMock(side_effect=failure)),
+            patch.object(uploader, 'fill_form', AsyncMock()) as fill,
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                await uploader.upload(runtime)
+        self.assertIs(raised.exception, failure)
+        fill.assert_not_awaited()
+        context.storage_state.assert_not_awaited()
+        browser.close.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()

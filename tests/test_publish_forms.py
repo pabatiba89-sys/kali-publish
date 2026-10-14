@@ -186,6 +186,19 @@ class PublishFormTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(click.call_args.kwargs['timeout'], 900000)
         self.assertGreaterEqual(file_input.set_input_files.call_args.kwargs['timeout'], 900000)
 
+    async def test_instagram_recognizes_localized_completion_dialog(self):
+        uploader = InstagramWebVideo('Title', 'unused', [], 'unused')
+        for message in ('分享了 Reels', '你的 Reels 已分享。', 'Your reel has been shared'):
+            await self.page.set_content(f'<div role="dialog"><h2>{message}</h2><button>完成</button></div>')
+            await uploader.wait_share_result(self.page, timeout=500)
+
+    async def test_instagram_does_not_accept_background_or_hidden_success(self):
+        uploader = InstagramWebVideo('Title', 'unused', [], 'unused')
+        await self.page.set_content('<p>你的 Reels 已分享。</p><div role="dialog" hidden>分享了 Reels</div>'
+                                    '<div role="dialog">正在分享</div>')
+        with self.assertRaises(TimeoutError):
+            await uploader.wait_share_result(self.page, timeout=300)
+
     async def test_x_posts_from_active_composer_once_not_background(self):
         html = '''<div data-testid="tweetTextarea_0" contenteditable="true" hidden></div>
             <button data-testid="tweetButtonInline" onclick="window.background++">Post</button>

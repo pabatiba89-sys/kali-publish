@@ -1,5 +1,6 @@
 """Offline browser fixtures for re-login inside an existing publishing window."""
 import unittest
+import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -66,6 +67,69 @@ class AlipayPublishLoginTests(unittest.IsolatedAsyncioTestCase):
         page = SimpleNamespace(goto=AsyncMock(), is_closed=lambda: True)
         with self.assertRaisesRegex(RuntimeError, '窗口已关闭'):
             await self.uploader.login_for_publish(page, timeout=5)
+
+    async def test_temporary_hidden_login_frame_is_not_login_success(self):
+        self.portal = '''<iframe title="login" srcdoc="扫码登录"></iframe>
+          <script>
+            setTimeout(()=>document.querySelector('iframe').hidden=true,100);
+            setTimeout(()=>document.querySelector('iframe').hidden=false,600);
+          </script>'''
+        with self.assertRaisesRegex(RuntimeError, '登录未完成'):
+            await self.uploader.login_for_publish(self.page, timeout=1.2)
+        self.assertFalse(self.page.is_closed())
+
+    async def test_upload_page_recovers_login_redirect_in_same_window(self):
+        visits = []
+
+        async def redirected_fixture(route):
+            path = route.request.url
+            visits.append(path)
+            if '/life-account/' in path and len(visits) == 1:
+                html = '''<script>location.href='/page/portal/home'</script>'''
+            elif '/portal/' in path:
+                html = self.portal
+            elif '/life-account/' in path:
+                html = '<a href="/content-creation/publish/short-video">发布视频</a>'
+            else:
+                html = '<input type="file" accept="video/*">'
+            await route.fulfill(body=html, content_type='text/html; charset=utf-8')
+
+        await self.page.unroute('**/*')
+        await self.page.route('**/*', redirected_fixture)
+        with patch('uploader.alipay_uploader.main.alipay_cookie_gen', AsyncMock()) as standalone:
+            await self.uploader.open_upload_page(self.page, timeout=10)
+        self.assertIn('/content-creation/publish/short-video', self.page.url)
+        self.assertFalse(self.page.is_closed())
+        self.assertEqual(len(self.page.context.pages), 1)
+        self.assertEqual(sum('/life-account/' in url for url in visits), 2)
+        standalone.assert_not_awaited()
+
+    async def test_upload_route_alone_does_not_mean_form_is_ready(self):
+        async def fixture(route):
+            html = ('<a href="/content-creation/publish/short-video">发布视频</a>'
+                    if '/life-account/' in route.request.url else '<div>加载中</div>')
+            await route.fulfill(body=html, content_type='text/html; charset=utf-8')
+        await self.page.unroute('**/*')
+        await self.page.route('**/*', fixture)
+        with self.assertRaisesRegex(RuntimeError, '发布页等待超时'):
+            await self.uploader.open_upload_page(self.page, timeout=1)
+        self.assertFalse(self.page.is_closed())
+
+    async def test_upload_page_keeps_waiting_without_refreshing_qr_code(self):
+        visits = []
+        async def fixture(route):
+            visits.append(route.request.url)
+            await route.fulfill(body='<iframe title="login" srcdoc="扫码登录"></iframe>',
+                                content_type='text/html; charset=utf-8')
+        await self.page.unroute('**/*')
+        await self.page.route('**/*', fixture)
+        with self.assertRaisesRegex(RuntimeError, '发布页等待超时'):
+            await self.uploader.open_upload_page(self.page, timeout=1)
+        self.assertEqual(len(visits), 1)
+        self.assertFalse(self.page.is_closed())
+
+    def test_upload_page_wait_budget_is_fifteen_minutes(self):
+        self.assertEqual(inspect.signature(AlipayVideo.open_upload_page).parameters['timeout'].default, 900)
 
 
 if __name__ == '__main__':
