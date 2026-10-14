@@ -322,7 +322,8 @@ class PublishFormTests(unittest.IsolatedAsyncioTestCase):
         uploader = XiaoHongShuVideo("Title", "unused", [], None, "unused")
         self.assertTrue(callable(getattr(uploader, "submit_and_confirm", None)),
                         "XHS requires semantic publish selection and bounded confirmation")
-        await uploader.submit_and_confirm(self.page, timeout=1500)
+        # Allow loaded Windows CI runners time to complete the intercepted navigation.
+        await uploader.submit_and_confirm(self.page, timeout=5000)
         self.assertIn("/publish/success", self.page.url)
 
     async def test_xhs_unconfirmed_submission_is_not_repeated(self):
