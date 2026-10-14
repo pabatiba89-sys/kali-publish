@@ -448,24 +448,27 @@ class AlipayVideo:
     async def upload(self, playwright: Playwright) -> None:
         if not Path(self.file_path).is_file():
             raise FileNotFoundError(f"Video file does not exist: {self.file_path}")
-        session_valid = await _cookie_auth(playwright, self.account_file)
+        has_saved_state = Path(self.account_file).is_file()
+        # Reuse saved state in the actual publishing session. A separate headless
+        # probe can misclassify a slow page, or rotate cookies that it never saves.
+        # Keep this window visible so a genuine login redirect can be handled here.
         browser = await playwright.chromium.launch(
-            **chromium_launch_options(headless=self.headless if session_valid else False)
+            **chromium_launch_options(headless=False)
         )
         context = None
         stage = "创建发布会话"
         try:
-            # Expired/missing state starts a fresh session in the publication
-            # browser; no temporary registration browser or second cookie probe.
-            options = {"storage_state": self.account_file} if session_valid else {}
+            options = {"storage_state": self.account_file} if has_saved_state else {}
             context = await browser.new_context(**options)
             page = await context.new_page()
-            if not session_valid:
+            if not has_saved_state:
                 stage = "扫码重新登录"
                 await self.login_for_publish(page)
+            else:
+                alipay_logger.info("在本次发布窗口复用已保存登录态，仅在平台要求时扫码")
             stage = "进入发布页"
             await self.open_upload_page(page)
-            if not session_valid:
+            if not has_saved_state:
                 alipay_logger.info("支付宝生活号重新登录成功，已进入发布页，继续本次发布")
             stage = "填写视频和封面"
             await self.fill_form(page)

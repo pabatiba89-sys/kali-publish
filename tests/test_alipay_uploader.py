@@ -63,6 +63,7 @@ class AlipayCleanupTests(unittest.IsolatedAsyncioTestCase):
         browser.close.assert_awaited_once()
 
     async def run_login_flow(self, auth_results, login_success, expect_error=False, publish_error=False):
+        # First flag denotes an existing state file, not a headless auth verdict.
         events = []
         page = object()
         async def login_page(actual_page):
@@ -91,8 +92,10 @@ class AlipayCleanupTests(unittest.IsolatedAsyncioTestCase):
         runtime = SimpleNamespace(chromium=SimpleNamespace(launch=AsyncMock(return_value=browser)))
         uploader = AlipayVideo('title', 'unused', [], 'account.json', headless=True)
         with (
-            patch('uploader.alipay_uploader.main.Path.is_file', return_value=True),
-            patch('uploader.alipay_uploader.main._cookie_auth', AsyncMock(return_value=auth_results[0])) as auth,
+            patch('uploader.alipay_uploader.main.Path.is_file',
+                  lambda path: path.name != 'account.json' or auth_results[0]),
+            patch('uploader.alipay_uploader.main._cookie_auth',
+                  AsyncMock(side_effect=AssertionError('Publishing must not probe another session'))) as auth,
             patch('uploader.alipay_uploader.main.alipay_cookie_gen', AsyncMock()) as standalone_login,
             patch.object(uploader, 'login_for_publish', AsyncMock(side_effect=login_page)) as login,
             patch.object(uploader, 'open_upload_page', AsyncMock(side_effect=open_page)),
@@ -108,16 +111,16 @@ class AlipayCleanupTests(unittest.IsolatedAsyncioTestCase):
                 await uploader.upload(runtime)
                 context.storage_state.assert_awaited_once_with(path='account.json')
         runtime.chromium.launch.assert_awaited_once()
-        self.assertEqual(runtime.chromium.launch.call_args.kwargs['headless'], auth_results[0])
+        self.assertFalse(runtime.chromium.launch.call_args.kwargs['headless'])
         browser.new_context.assert_awaited_once_with(**({'storage_state': 'account.json'} if auth_results[0] else {}))
         context.new_page.assert_awaited_once()
         context.close.assert_awaited_once()
         browser.close.assert_awaited_once()
-        auth.assert_awaited_once()
+        auth.assert_not_awaited()
         standalone_login.assert_not_awaited()
         return events, login, page
 
-    async def test_expired_session_logs_in_then_publishes_and_refreshes_cookie(self):
+    async def test_missing_session_logs_in_then_publishes_and_refreshes_cookie(self):
         events, login, page = await self.run_login_flow([False, True], True)
         self.assertEqual(events, ['login', 'open_upload', 'publish', 'save_cookie', 'close_context', 'close_browser'])
         login.assert_awaited_once_with(page)
@@ -132,7 +135,7 @@ class AlipayCleanupTests(unittest.IsolatedAsyncioTestCase):
         login.assert_awaited_once()
         self.assertEqual(events, ['login', 'close_context', 'close_browser'])
 
-    async def test_unusable_refreshed_cookie_does_not_publish(self):
+    async def test_unusable_upload_page_after_login_does_not_publish(self):
         events, login, _ = await self.run_login_flow([False, False], True, expect_error=True)
         login.assert_awaited_once()
         self.assertEqual(events, ['login', 'open_upload', 'close_context', 'close_browser'])

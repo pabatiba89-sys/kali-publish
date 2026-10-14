@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -105,6 +106,43 @@ class PublishLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RealBrowserLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_alipay_next_upload_reuses_refreshed_state_without_preflight(self):
+        async with async_playwright() as runtime:
+            with tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / 'account.json'
+                target.write_text(json.dumps({'cookies': [], 'origins': []}), encoding='utf-8')
+                video = Path(directory) / 'fixture.mp4'
+                video.touch()
+                for attempt in (1, 2):
+                    uploader = AlipayVideo('fixture', video, [], target)
+
+                    async def open_fixture(page):
+                        cookies = {item['name']: item['value'] for item in await page.context.cookies()}
+                        self.assertEqual(cookies.get('fixture_session'), str(attempt - 1) if attempt > 1 else None)
+                        await page.route('**/*', lambda route: route.fulfill(
+                            body='<input type="file">', content_type='text/html'))
+                        await page.goto('https://c.alipay.com/content-creation/publish/short-video')
+
+                    async def rotate_fixture_cookie(page):
+                        await page.context.add_cookies([{'name': 'fixture_session', 'value': str(attempt),
+                                                        'url': 'https://c.alipay.com'}])
+
+                    with patch('uploader.alipay_uploader.main.chromium_launch_options',
+                               return_value=chromium_launch_options(True)), \
+                         patch('uploader.alipay_uploader.main._cookie_auth',
+                               AsyncMock(side_effect=AssertionError('No separate session probe'))) as probe, \
+                         patch.object(uploader, 'login_for_publish',
+                                      AsyncMock(side_effect=AssertionError('Saved session was discarded'))) as login, \
+                         patch.object(uploader, 'open_upload_page', side_effect=open_fixture), \
+                         patch.object(uploader, 'fill_form', side_effect=rotate_fixture_cookie), \
+                         patch.object(uploader, 'wait_upload', AsyncMock()), \
+                         patch.object(uploader, 'submit', AsyncMock()):
+                        await uploader.upload(runtime)
+                    probe.assert_not_awaited()
+                    login.assert_not_awaited()
+                    saved = json.loads(target.read_text(encoding='utf-8'))
+                    self.assertEqual(saved['cookies'][0]['value'], str(attempt))
+
     async def test_cdp_fallback_closes_owned_browser_not_another_browser(self):
         async with async_playwright() as runtime:
             owned = await runtime.chromium.launch(**chromium_launch_options(True))
