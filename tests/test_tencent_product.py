@@ -108,6 +108,40 @@ class TencentProductFormTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.page.locator('#target input').is_checked())
         self.assertEqual(await self.page.evaluate('[window.adds,window.confirms]'), [1, 1])
 
+    async def test_nested_id_control_wrapper_does_not_hide_sibling_course_name(self):
+        html = fixture().replace(
+            f'<span>{LAOLU_PRODUCT_NAME}</span><span>ID {LAOLU_PRODUCT_ID}</span>',
+            f'<span>{LAOLU_PRODUCT_NAME}</span><div class="details"><span>ID {LAOLU_PRODUCT_ID}</span></div>')
+        # Reproduce an inner details wrapper containing the radio and ID, while
+        # the name is a sibling outside that wrapper. The old nearest-radio
+        # ancestor stops at details and can never see the course name.
+        await self.page.set_content(html)
+        await self.page.evaluate('''() => {
+          const row=document.querySelector('#target');
+          row.querySelector('.details').prepend(row.querySelector('input'));
+        }''')
+        await video().add_required_product(self.page, timeout=5000)
+        self.assertTrue(await self.page.locator('#target input').is_checked())
+        self.assertEqual(await self.page.evaluate('[window.adds,window.confirms,window.posts]'), [1, 1, 0])
+
+    async def test_course_name_with_layout_whitespace_still_matches(self):
+        name = '陆老师 岳老师的 视频创业课'
+        await self.page.set_content(fixture(name=name).replace(
+            f"textContent={name!r}", f"textContent={LAOLU_PRODUCT_NAME!r}"))
+        await video().add_required_product(self.page, timeout=5000)
+        self.assertTrue(await self.page.locator('#target input').is_checked())
+
+    async def test_list_ancestor_cannot_select_a_different_products_radio(self):
+        html = fixture().replace('<input type="radio" name="goods" value="course" >', '')
+        await self.page.set_content(html)
+        dialog = self.page.locator('[role="dialog"]').first
+        await dialog.evaluate('(element)=>element.hidden=false')
+        await self.page.locator('#rows').evaluate('(element)=>element.hidden=false')
+        identity = dialog.get_by_text(f'ID {LAOLU_PRODUCT_ID}', exact=True)
+        with self.assertRaisesRegex(RuntimeError, '无法唯一确定'):
+            await video().resolve_product_row(dialog, identity, timeout=400)
+        self.assertFalse(await self.page.locator('input[value=wrong]').is_checked())
+
     async def test_checkbox_is_checked_and_preselected_hidden_checkbox_is_not_toggled(self):
         for selected in (False, True):
             with self.subTest(selected=selected):

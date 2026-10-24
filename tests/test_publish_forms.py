@@ -178,7 +178,7 @@ class PublishFormTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(uploader, 'open_composer', AsyncMock(return_value=file_input)),
             patch.object(uploader, 'prepare_caption', AsyncMock()),
-            patch('uploader.web_publishers._click_text', AsyncMock()) as click,
+            patch.object(uploader, 'submit_caption', AsyncMock()) as click,
             patch('uploader.web_publishers._first_visible', AsyncMock(return_value=success)) as wait,
         ):
             await uploader.publish(self.page)
@@ -191,6 +191,52 @@ class PublishFormTests(unittest.IsolatedAsyncioTestCase):
         for message in ('分享了 Reels', '你的 Reels 已分享。', 'Your reel has been shared'):
             await self.page.set_content(f'<div role="dialog"><h2>{message}</h2><button>完成</button></div>')
             await uploader.wait_share_result(self.page, timeout=500)
+
+    async def test_instagram_composer_input_wait_has_fifteen_minute_budget(self):
+        from unittest.mock import Mock
+        create = SimpleNamespace(click=AsyncMock())
+        upload = SimpleNamespace(wait_for=AsyncMock())
+        later = SimpleNamespace(click=AsyncMock())
+        page = Mock(goto=AsyncMock())
+        page.get_by_role.return_value = later
+        page.locator.return_value = SimpleNamespace(first=upload)
+        uploader = InstagramWebVideo('title', 'unused', [], 'unused')
+        with patch('uploader.web_publishers._first_visible', AsyncMock(return_value=create)):
+            self.assertIs(await uploader.open_composer(page), upload)
+        create.click.assert_awaited_once_with(timeout=900000)
+        upload.wait_for.assert_awaited_once_with(state='attached', timeout=900000)
+
+    async def test_instagram_delayed_composer_loads_without_reopening(self):
+        html = '''<button onclick="this.remove()">以后再说</button>
+            <input type="file" accept="image/jpeg">
+            <button onclick="window.opens++;setTimeout(() => {
+              document.querySelector('#composer').innerHTML='&lt;input type=file accept=video/mp4&gt;';
+            }, 700)"><svg aria-label="新帖子" width="24" height="24"></svg></button>
+            <div id="composer" role="dialog">Loading...</div><script>window.opens=0</script>'''
+        await self.page.route('**/*', lambda route: route.fulfill(body=html, content_type='text/html; charset=utf-8'))
+        uploader = InstagramWebVideo('title', 'unused', [], 'unused')
+        file_input = await uploader.open_composer(self.page, timeout=5000)
+        self.assertEqual(await file_input.get_attribute('accept'), 'video/mp4')
+        self.assertEqual(await self.page.evaluate('window.opens'), 1)
+
+    async def test_instagram_stuck_composer_does_not_upload_or_submit(self):
+        html = '''<button onclick="this.remove()">以后再说</button>
+            <button onclick="window.opens++"><svg aria-label="新帖子" width="24" height="24"></svg></button>
+            <div role="dialog">Loading...</div><script>window.opens=0</script>'''
+        await self.page.route('**/*', lambda route: route.fulfill(body=html, content_type='text/html; charset=utf-8'))
+        uploader = InstagramWebVideo('title', 'unused', [], 'unused')
+        open_composer = uploader.open_composer
+        async def bounded_open(page):
+            return await open_composer(page, timeout=500)
+        with patch.object(uploader, 'open_composer', side_effect=bounded_open), \
+             patch.object(uploader, 'prepare_caption', AsyncMock()) as caption, \
+             patch.object(uploader, 'submit_caption', AsyncMock()) as submit:
+            with self.assertRaisesRegex(RuntimeError, '视频尚未上传或发布'):
+                await uploader.publish(self.page)
+        caption.assert_not_awaited()
+        submit.assert_not_awaited()
+        self.assertEqual(await self.page.evaluate('window.opens'), 1)
+        self.assertEqual(uploader._publish_stage, '等待新建帖子加载上传控件')
 
     async def test_instagram_does_not_accept_background_or_hidden_success(self):
         uploader = InstagramWebVideo('Title', 'unused', [], 'unused')

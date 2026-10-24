@@ -326,6 +326,30 @@ class YouTubeVideo(BaseVideoUploader):
         await self.confirm_publication(page, video_id, timeout)
         return video_url
 
+    async def confirm_pending_checks(self, page: Page, timeout=5000) -> bool:
+        """Accept only the user's approved checks-pending warning for public posts."""
+        if self.visibility != 'public':
+            return False
+        warning = page.get_by_role('dialog').filter(
+            has=page.get_by_text(re.compile(
+                r"^\s*(?:我们仍在检查你的内容|We[’']re still checking your content)\s*$", re.I
+            ))
+        ).filter(has_text=re.compile(
+            r'在我们完成检查之前.*私享|recommend.*private', re.I | re.S
+        )).locator('visible=true').last
+        if not await warning.is_visible():
+            return False
+        button = warning.get_by_role('button', name=re.compile(
+            r'^\s*(?:仍然发布|Publish anyway)\s*$', re.I
+        ))
+        if await button.count() != 1 or not await button.is_visible() or not await button.is_enabled():
+            return False
+        if await button.get_attribute('aria-disabled') == 'true':
+            return False
+        await button.click(timeout=timeout)
+        youtube_logger.info('已按用户要求确认“仍然发布”，继续核对视频公开状态')
+        return True
+
     async def confirm_publication(self, page: Page, video_id: str, timeout=180000) -> None:
         if not re.fullmatch(r'[A-Za-z0-9_-]+', video_id):
             raise ValueError('invalid YouTube video id')
@@ -335,7 +359,11 @@ class YouTubeVideo(BaseVideoUploader):
             'unlisted': re.compile(r'^(不公开列出|不公开|Unlisted)$', re.I),
             'private': re.compile(r'^(私享|私人|Private)$', re.I),
         }[self.visibility]
+        checks_confirmed = False
         while asyncio.get_running_loop().time() < deadline:
+            if not checks_confirmed:
+                remaining = max(1, int((deadline - asyncio.get_running_loop().time()) * 1000))
+                checks_confirmed = await self.confirm_pending_checks(page, timeout=min(5000, remaining))
             # Only dismiss a success/result dialog, never an arbitrary warning.
             result = page.get_by_role('dialog').filter(
                 has_text=re.compile(r'视频已发布|视频已保存|Video published|Video saved', re.I)

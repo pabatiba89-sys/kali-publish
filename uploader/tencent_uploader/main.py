@@ -20,6 +20,8 @@ PRODUCT_TIMEOUT_MS = 15 * 60 * 1000
 PRODUCT_CONFIRM = re.compile(r'^\s*(?:添加(?:\s*[（(]\s*1\s*[）)])?|确\s*[认定](?:\s*[（(]\s*1\s*[）)])?)\s*$')
 PRODUCT_DIALOG_ACTION = re.compile(r'^\s*(?:添加(?:\s*[（(]\s*\d+\s*[）)])?|确\s*[认定](?:\s*[（(]\s*\d+\s*[）)])?)\s*$')
 PRODUCT_DIALOGS = '[role="dialog"]:visible, .weui-desktop-dialog:visible, .weui-desktop-dialog__wrp:visible'
+PRODUCT_CONTROLS = 'input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]'
+PRODUCT_NAME_PATTERN = re.compile(r'^\s*' + r'\s*'.join(map(re.escape, LAOLU_PRODUCT_NAME)) + r'\s*$')
 
 def format_str_for_short_title(origin_title: str) -> str:
     # 定义允许的特殊字符
@@ -144,6 +146,35 @@ class TencentVideo(object):
         self._product_stage = stage
         tencent_logger.info('视频号商品步骤：{}', stage)
 
+    async def resolve_product_row(self, dialog, identity, timeout):
+        # The closest ancestor containing a radio can be an inner ID/details
+        # wrapper. Require both the requested course name and its selection
+        # control in the same container before choosing the closest ancestor.
+        rows = identity.locator('xpath=ancestor::*').filter(
+            has=dialog.page.get_by_text(PRODUCT_NAME_PATTERN)
+        ).filter(has=dialog.page.locator(PRODUCT_CONTROLS))
+        row = rows.last
+        try:
+            await expect(row).to_be_visible(timeout=timeout)
+            # A table/list containing several products is never a product row.
+            await expect(row.locator(PRODUCT_CONTROLS)).to_have_count(1, timeout=timeout)
+            ids = row.get_by_text(re.compile(r'^\s*(?:ID\s*[:：]?\s*\d+|\d{10,})\s*$', re.I)).locator('visible=true')
+            await expect(ids).to_have_count(1, timeout=timeout)
+        except AssertionError as exc:
+            names = dialog.get_by_text(PRODUCT_NAME_PATTERN).locator('visible=true')
+            controls = dialog.locator(PRODUCT_CONTROLS)
+            detail = (f'指定商品编号已找到；课程名称匹配数={await names.count()}，'
+                      f'弹窗选择控件数={await controls.count()}')
+            raise RuntimeError(detail + '；无法唯一确定课程所在商品行') from exc
+        return row
+
+    async def product_diagnostic(self, page):
+        dialog = self.product_dialog(page, '从橱窗添加商品')
+        names = dialog.get_by_text(PRODUCT_NAME_PATTERN).locator('visible=true')
+        controls = dialog.locator(PRODUCT_CONTROLS)
+        return (f'课程名称匹配数={await names.count()}，'
+                f'弹窗选择控件数={await controls.count()}')
+
     async def add_required_product(self, page, timeout=PRODUCT_TIMEOUT_MS):
         """Attach the explicitly requested course only for 老陆 account names."""
         if '老陆' not in self.account_name:
@@ -153,11 +184,17 @@ class TencentVideo(object):
             # One shared allowance, not a fresh 15 minutes for every action.
             await asyncio.wait_for(self._add_required_product(page, timeout), timeout=timeout / 1000)
         except Exception as exc:
+            detail = str(exc) or type(exc).__name__
+            if self._product_stage == '核对商品名称和选择控件':
+                try:
+                    detail += '；' + await asyncio.wait_for(self.product_diagnostic(page), timeout=1)
+                except Exception:
+                    pass
             # Record the actual failed locator without logging cookies or locals.
             tencent_logger.error('视频号商品步骤失败 [{}] {}: {}',
-                                 self._product_stage, type(exc).__name__, str(exc))
+                                 self._product_stage, type(exc).__name__, detail)
             raise RuntimeError(f'视频号商品步骤【{self._product_stage}】未完成，已停止发布；'
-                               '详情见 logs/tencent.log') from exc
+                               f'{detail}；详情见 logs/tencent.log') from exc
 
     async def _add_required_product(self, page, timeout):
         try:
@@ -186,14 +223,9 @@ class TencentVideo(object):
             )).locator('visible=true')
             await expect(identity).to_have_count(1, timeout=timeout)
             self.product_stage('核对商品名称和选择控件')
-            row = identity.locator(
-                "xpath=ancestor::*[.//input[@type='radio' or @type='checkbox'] "
-                "or .//*[@role='radio' or @role='checkbox']][1]"
-            )
-            await expect(row.get_by_text(LAOLU_PRODUCT_NAME, exact=True)).to_be_visible(timeout=timeout)
+            row = await self.resolve_product_row(dialog, identity, timeout)
             self.product_stage('选中指定商品')
-            control = row.locator('input[type="radio"], input[type="checkbox"], '
-                                  '[role="radio"], [role="checkbox"]')
+            control = row.locator(PRODUCT_CONTROLS)
             await expect(control).to_have_count(1, timeout=timeout)
             # Do not toggle a previously selected checkbox off.
             if not await control.is_checked():
@@ -209,7 +241,7 @@ class TencentVideo(object):
             await self.confirm_product_timing(page, timeout)
             self.product_stage('核对发布表单中的商品')
             # A disappearing picker alone is not evidence of attachment.
-            await expect(form.get_by_text(LAOLU_PRODUCT_NAME, exact=True)).to_be_visible(timeout=timeout)
+            await expect(form.get_by_text(PRODUCT_NAME_PATTERN)).to_be_visible(timeout=timeout)
             tencent_logger.info('已添加指定课程商品：' + LAOLU_PRODUCT_ID)
         except asyncio.CancelledError:
             # wait_for cancels on the shared deadline. Log the current stage.

@@ -362,7 +362,25 @@ class InstagramWebVideo(BrowserVideoPublisher):
     platform_type = 8
     platform_slug = "instagram"
 
-    async def open_composer(self, page: Page) -> Locator:
+    @property
+    def publication_caption(self) -> str:
+        # Instagram uses one caption for the title, description and hashtags.
+        # Never truncate the tail silently: that can discard the requested topics.
+        tags = [tag.strip().lstrip('#').strip() for tag in self.tags]
+        caption = '\n\n'.join(part for part in (
+            self.title.strip(), self.description.strip(),
+            ' '.join(f'#{tag}' for tag in tags if tag),
+        ) if part)
+        if len(caption) > 2200:
+            raise ValueError('Instagram 标题、正文和话题合计超过 2200 字符，请缩短后发布')
+        return caption
+
+    def publish_stage(self, stage):
+        self._publish_stage = stage
+        instagram_logger.info('Instagram 发布步骤：{}', stage)
+
+    async def open_composer(self, page: Page, timeout=PROCESSING_TIMEOUT_MS) -> Locator:
+        self.publish_stage('打开首页')
         await page.goto(
             "https://www.instagram.com/",
             wait_until="domcontentloaded",
@@ -375,48 +393,123 @@ class InstagramWebVideo(BrowserVideoPublisher):
             await later.click(timeout=5000)
         except PlaywrightTimeoutError:
             pass
+        self.publish_stage('打开新建帖子')
         create = await _first_visible([
             page.locator('svg[aria-label="新帖子"], svg[aria-label="新建帖子"], svg[aria-label="New post"]'),
             page.get_by_role("link", name=re.compile(r"^(Create|创建)$", re.I)),
-        ], timeout=60000)
-        await create.click()
+        ], timeout=timeout)
+        await create.click(timeout=timeout)
+        self.publish_stage('等待新建帖子加载上传控件')
+        # The modal can remain on a spinner long after the Create click succeeds.
+        # Wait for its file input without reopening the modal or refreshing the page.
         file_input = page.locator('input[type="file"][accept*="video"]').first
-        await file_input.wait_for(state="attached", timeout=60000)
+        try:
+            await file_input.wait_for(state="attached", timeout=timeout)
+        except PlaywrightTimeoutError as exc:
+            raise RuntimeError('Instagram 新建帖子未在等待时限内加载完成，视频尚未上传或发布') from exc
         return file_input
 
-    async def prepare_caption(self, page: Page) -> Locator:
-        # First video upload can show a Reels explanation over the crop dialog.
-        onboarding = page.get_by_role("dialog").filter(
-            has_text=re.compile(r"视频帖现在会以 Reels|Video posts.*reels", re.I)
-        )
-        try:
-            await onboarding.get_by_role("button", name=re.compile(r"^(确定|OK|Got it)$", re.I)).click(timeout=5000)
-        except PlaywrightTimeoutError:
-            pass
-        await _click_text(page, ["Next", "Continue", "下一步", "继续"], timeout=PROCESSING_TIMEOUT_MS)
-        await _click_text(page, ["Next", "Continue", "下一步", "继续"], timeout=PROCESSING_TIMEOUT_MS)
-        caption = await _first_visible(
-            [
-                page.locator('[role="dialog"] [contenteditable="true"][role="textbox"]'),
-                page.locator('textarea[aria-label*="caption" i]'),
-                page.locator('textarea[placeholder*="caption" i]'),
-                page.locator('textarea'),
-            ],
-            timeout=PROCESSING_TIMEOUT_MS,
-        )
-        await caption.fill(self.caption[:2200])
-        return caption
+    @staticmethod
+    async def enabled_dialog_action(dialog, names):
+        # Ignore background controls and disabled duplicates, including aria-disabled
+        # on a wrapping control. Instagram also renders links/divs with role=button.
+        for locator in (dialog.get_by_role('button', name=names),
+                        dialog.get_by_role('link', name=names)):
+            for button in await locator.all():
+                disabled = button.locator('xpath=ancestor-or-self::*[@disabled or @aria-disabled="true"]')
+                if await button.is_visible() and await button.is_enabled() and not await disabled.count():
+                    return button
+        return None
+
+    async def prepare_caption(self, page: Page, timeout=PROCESSING_TIMEOUT_MS) -> Locator:
+        expected_caption = self.publication_caption
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        next_names = re.compile(r'^\s*(?:Next|Continue|下一步|继续|繼續|下一页|下一頁)\s*$', re.I)
+        stage_names = re.compile(r'^\s*(?:Crop|Edit|裁剪|裁切|剪裁|编辑|編輯)\s*$', re.I)
+        previous_button = None
+        previous_stage = ''
+        advances = 0
+        self.publish_stage('等待裁剪页的下一步')
+        while asyncio.get_running_loop().time() < deadline:
+            remaining = max(1, int((deadline - asyncio.get_running_loop().time()) * 1000))
+            dialogs = page.get_by_role('dialog').locator('visible=true')
+            onboarding = dialogs.filter(has_text=re.compile(
+                r'视频帖现在会以 Reels|影片貼文.*Reels|Video posts.*reels', re.I
+            )).last
+            if await onboarding.is_visible():
+                dismiss = await self.enabled_dialog_action(onboarding, re.compile(
+                    r'^\s*(?:确定|確定|OK|Got it)\s*$', re.I))
+                if dismiss is not None:
+                    await dismiss.click(timeout=min(5000, remaining))
+                    await onboarding.wait_for(state='hidden', timeout=remaining)
+                await asyncio.sleep(0.1)
+                continue
+            # Work only inside the foreground composer, not the homepage textboxes.
+            dialog = dialogs.last
+            if await dialog.is_visible():
+                for caption in await dialog.locator(
+                    '[contenteditable="true"][role="textbox"], textarea'
+                ).all():
+                    if await caption.is_visible() and await caption.is_editable():
+                        self.publish_stage('填写标题、正文和话题')
+                        await caption.fill(expected_caption, timeout=remaining)
+                        return caption
+                button = await self.enabled_dialog_action(dialog, next_names)
+                if button is not None and advances < 2:
+                    headings = dialog.get_by_text(stage_names).locator('visible=true')
+                    stage = (await headings.first.inner_text()).strip() if await headings.count() else ''
+                    # A slow transition may leave the old Next enabled. Do not click
+                    # it twice; wait for a changed stage or disappearance of that node.
+                    unchanged = previous_button is not None and (
+                        bool(stage and stage == previous_stage) or
+                        (not stage and await previous_button.is_visible())
+                    )
+                    if not unchanged:
+                        previous_button = await button.element_handle()
+                        previous_stage = stage
+                        self.publish_stage(f'自动点击{stage or ("裁剪" if advances == 0 else "编辑")}页下一步')
+                        await button.click(timeout=min(5000, remaining))
+                        advances += 1
+            await asyncio.sleep(0.15)
+        raise TimeoutError('Instagram 裁剪/编辑未进入文案页，未点击分享；请检查失败截图和步骤日志')
+
+    async def submit_caption(self, caption: Locator, timeout=PROCESSING_TIMEOUT_MS):
+        expected = self.publication_caption
+        dialog = caption.locator('xpath=ancestor::*[@role="dialog"][1]')
+        # Commit the editor and move focus away from hashtag suggestions.
+        await caption.press('Tab', timeout=timeout)
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        names = re.compile(r'^\s*(?:Share|Publish|分享|发布|發佈|發表)\s*$', re.I)
+        while asyncio.get_running_loop().time() < deadline:
+            if await caption.is_visible() and await dialog.is_visible():
+                button = await self.enabled_dialog_action(dialog, names)
+                if button is not None:
+                    actual = await caption.evaluate(
+                        '(element) => element.tagName === "TEXTAREA" ? element.value : element.innerText'
+                    )
+                    # Chromium's contenteditable innerText can add an extra newline
+                    # for a blank <div><br></div>; compare content, not that rendering artifact.
+                    normalize = lambda text: re.sub(r'\n+', '\n', text.replace('\r\n', '\n')).strip()
+                    if normalize(actual) != normalize(expected):
+                        raise RuntimeError('Instagram 标题或话题填写后发生变化，未点击分享')
+                    remaining = max(1, int((deadline - asyncio.get_running_loop().time()) * 1000))
+                    self.publish_stage('点击分享')
+                    await button.click(timeout=remaining)
+                    return  # A result timeout must never retry the submission.
+            await asyncio.sleep(0.2)
+        raise TimeoutError('Instagram 当前发布窗口的分享按钮未就绪，未点击分享')
 
     async def publish(self, page: Page) -> None:
-        self._publish_stage = '打开编辑器'
+        self.publication_caption  # Validate before opening/uploading the video.
+        self.publish_stage('打开编辑器')
         file_input = await self.open_composer(page)
-        self._publish_stage = '上传视频'
+        self.publish_stage('上传视频')
         await file_input.set_input_files(self.file_path, timeout=PROCESSING_TIMEOUT_MS)
-        self._publish_stage = '编辑视频和文案'
-        await self.prepare_caption(page)
-        self._publish_stage = '点击分享'
-        await _click_text(page, ["Share", "分享", "发布"], timeout=PROCESSING_TIMEOUT_MS)
-        self._publish_stage = '确认分享结果'
+        self.publish_stage('编辑视频和文案')
+        caption = await self.prepare_caption(page)
+        self.publish_stage('核对标题和话题，等待分享按钮')
+        await self.submit_caption(caption, timeout=PROCESSING_TIMEOUT_MS)
+        self.publish_stage('确认分享结果')
         await self.wait_share_result(page)
         instagram_logger.success("Instagram 视频发布成功")
 
